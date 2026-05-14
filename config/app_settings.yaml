@@ -1,0 +1,40 @@
+# JQL для выборки задач (рекомендуется требовать исполнителя — без assignee задачи не показываются).
+jql: 'assignee is not EMPTY AND statusCategory != Done ORDER BY priority DESC'
+
+# Приоритеты: порядок в очереди сотрудника (выше в списке = выше приоритет) и цвета блоков.
+priorities:
+  order:
+    - Highest
+    - High
+    - Medium
+    - Low
+    - Lowest
+  colors:
+    Highest: "#c62828"
+    High: "#ef6c00"
+    Medium: "#f9a825"
+    Low: "#2e7d32"
+    Lowest: "#546e7a"
+    default: "#78909c"
+
+# Горизонт планирования на шкале дат.
+# kind: calendar_days — ровно count календарных дней от сегодня (на шкале только рабочие дни внутри интервала).
+# kind: working_days — count рабочих дней подряд от сегодня (выходные не занимают места на шкале).
+planning_horizon:
+  kind: calendar_days
+  count: 90
+
+pixels_per_working_day: 36
+
+# Откуда брать плановые трудозатраты (ширина прямоугольника в рабочих днях).
+# type:
+#   timetracking_original — fields.timetracking.originalEstimateSeconds -> дни через working_hours_per_day
+#   timetracking_remaining — remainingEstimateSeconds
+#   number_field — значение поля как число рабочих дней (например story points как «дни»)
+#   seconds_field — значение поля как секунды -> дни через working_hours_per_day
+effort:
+  type: timetracking_original
+  jira_field_id: null
+
+min_effort_working_days: 0.25
+working_hours_per_day: 8

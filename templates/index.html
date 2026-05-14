@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jira — план по сотрудникам</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" />
+</head>
+<body>
+  <header class="toolbar">
+    <h1>План задач</h1>
+    <button type="button" id="btn-refresh">Обновить из Jira</button>
+    <span id="status" class="status"></span>
+  </header>
+  <div class="board-wrap">
+    <div id="board" class="board" aria-busy="true"></div>
+  </div>
+  <script src="{{ url_for('static', filename='board.js') }}"></script>
+</body>
+</html>
