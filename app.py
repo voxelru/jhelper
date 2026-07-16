@@ -229,7 +229,7 @@ def priority_rank(name: str | None, order: list[str]) -> int:
 
 
 def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
-    fields = ["summary", "assignee", "priority", "timetracking"]
+    fields = ["summary", "assignee", "priority", "status", "timetracking"]
     effort_type, effort_field_id = effort_cfg(settings)
     if effort_type in ("number_field", "seconds_field") and effort_field_id:
         fields.append(effort_field_id)
@@ -277,6 +277,8 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
         summary = (fields.get("summary") or "").strip() or key
         pr = fields.get("priority") or {}
         priority_name = pr.get("name")
+        status = fields.get("status") or {}
+        status_name = status.get("name") if isinstance(status, dict) else None
         assignee = fields.get("assignee")
         assignee_id, assignee_name = assignee_identity(assignee if isinstance(assignee, dict) else None)
         if not assignee_id:
@@ -293,6 +295,7 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
             {
                 "key": key,
                 "summary": summary,
+                "status": status_name,
                 "customer": customer,
                 "priority": priority_name,
                 "assigneeId": assignee_id,

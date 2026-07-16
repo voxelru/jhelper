@@ -203,6 +203,11 @@ body {
   text-underline-offset: 2px;
 }
 
+.task-status {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
 .task a.task-key:hover {
   opacity: 1;
 }

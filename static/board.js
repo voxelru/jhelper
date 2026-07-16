@@ -242,9 +242,10 @@
         const keyHtml = base
           ? `<a class="task-key" href="${escapeHtml(base)}/browse/${encodeURIComponent(t.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>`
           : `<span class="task-key">${escapeHtml(t.key)}</span>`;
+        const statusHtml = `<span class="task-status">[${escapeHtml(t.status || "—")}]</span>`;
 
         el.innerHTML = `
-          <div class="task-line task-line-key">${keyHtml}</div>
+          <div class="task-line task-line-key">${keyHtml} ${statusHtml}</div>
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;
