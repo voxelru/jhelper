@@ -130,7 +130,7 @@ effort:
   type: timetracking_original
   jira_field_id: null
 
-min_effort_working_days: 0.25
+min_effort_working_days: 1
 working_hours_per_day: 8
 ```
 
@@ -141,7 +141,7 @@ working_hours_per_day: 8
 | `number_field`            | Число из поля (`jira_field_id`, напр. `customfield_10016`) как рабочие дни |
 | `seconds_field`           | Число из поля как секунды → дни через `working_hours_per_day` |
 
-Если оценка отсутствует или нулевая, используется `min_effort_working_days`.
+Если оценка отсутствует или нулевая, используется `min_effort_working_days` (по умолчанию **1 md**).
 
 #### Масштаб шкалы
 

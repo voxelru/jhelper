@@ -36,5 +36,6 @@ effort:
   type: timetracking_original
   jira_field_id: null
 
-min_effort_working_days: 0.25
+# Если оценка отсутствует — минимальная длина в человеко-днях (md).
+min_effort_working_days: 1
 working_hours_per_day: 8

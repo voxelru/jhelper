@@ -82,10 +82,10 @@ def iter_working_dates(start: date, end: date) -> list[date]:
 
 def effort_seconds_to_days(seconds: int | None, settings: dict[str, Any]) -> float:
     if not seconds or seconds <= 0:
-        return float(settings.get("min_effort_working_days", 0.25))
+        return float(settings.get("min_effort_working_days", 1))
     hours = seconds / 3600.0
     wh = float(settings.get("working_hours_per_day", 8))
-    return max(float(settings.get("min_effort_working_days", 0.25)), hours / wh)
+    return max(float(settings.get("min_effort_working_days", 1)), hours / wh)
 
 
 def _flatten_field_value(raw: Any) -> Any:
@@ -106,7 +106,7 @@ def _flatten_field_value(raw: Any) -> Any:
 
 
 def effort_days_for_issue(fields: dict[str, Any], effort_type: str, field_id: str | None, settings: dict[str, Any]) -> float:
-    min_d = float(settings.get("min_effort_working_days", 0.25))
+    min_d = float(settings.get("min_effort_working_days", 1))
 
     if effort_type == "timetracking_remaining":
         tt = fields.get("timetracking") or {}
@@ -212,8 +212,8 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
         return (r, item.get("key") or "")
 
     rows: list[dict[str, Any]] = []
-    for aid in sorted(by_assignee.keys()):
-        group = sorted(by_assignee[aid], key=sort_key)
+    for aid, group_raw in by_assignee.items():
+        group = sorted(group_raw, key=sort_key)
         offset = 0.0
         placed: list[dict[str, Any]] = []
         display_name = (group[0].get("assigneeName") if group else None) or aid
@@ -228,6 +228,8 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
             )
             offset += effort
         rows.append({"assigneeId": aid, "assigneeName": display_name, "tasks": placed})
+
+    rows.sort(key=lambda r: (r.get("assigneeName") or "").casefold())
     return {"rows": rows}
 
 
@@ -257,6 +259,7 @@ def api_settings():
             "workingDates": working_dates,
             "workingDayCount": len(working_dates),
             "effort": {"type": etype, "jiraFieldId": efid},
+            "jiraBaseUrl": (os.environ.get("JIRA_BASE_URL") or "").rstrip("/"),
         }
     )
 

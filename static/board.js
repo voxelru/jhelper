@@ -134,7 +134,11 @@
         el.style.left = `${t.startOffsetDays * ppd}px`;
         el.style.width = `${Math.max(4, t.durationDays * ppd - 2)}px`;
         el.title = `${t.key}: ${t.summary}\nПриоритет: ${t.priority || "—"}`;
-        el.innerHTML = `<span class="task-key">${t.key}</span> ${escapeHtml(t.summary)}`;
+        const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
+        const keyHtml = base
+          ? `<a class="task-key" href="${escapeHtml(base)}/browse/${encodeURIComponent(t.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>`
+          : `<span class="task-key">${escapeHtml(t.key)}</span>`;
+        el.innerHTML = `${keyHtml} ${escapeHtml(t.summary)}`;
         track.appendChild(el);
       }
 
@@ -157,6 +161,10 @@
 
   function wireRowDragDrop(rowEl, trackEl, row) {
     trackEl.addEventListener("dragstart", (e) => {
+      if (e.target.closest("a.task-key")) {
+        e.preventDefault();
+        return;
+      }
       const tEl = e.target.closest(".task");
       if (!tEl || !trackEl.contains(tEl)) return;
       const task = row.tasks.find((x) => x.key === tEl.dataset.issueKey);

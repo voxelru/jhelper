@@ -176,6 +176,13 @@ body {
 .task .task-key {
   font-weight: 700;
   opacity: 0.95;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.task a.task-key:hover {
+  opacity: 1;
 }
 
 .task.dragging {
