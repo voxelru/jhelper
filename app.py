@@ -208,6 +208,26 @@ def effort_days_for_issue(fields: dict[str, Any], effort_type: str, field_id: st
     return min_d
 
 
+def _is_positive_number(raw: Any) -> bool:
+    try:
+        return raw is not None and float(raw) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def has_jira_effort(fields: dict[str, Any], effort_type: str, field_id: str | None) -> bool:
+    if effort_type == "timetracking_remaining":
+        tt = fields.get("timetracking") or {}
+        return _is_positive_number(tt.get("remainingEstimateSeconds"))
+    if effort_type == "timetracking_original":
+        tt = fields.get("timetracking") or {}
+        return _is_positive_number(tt.get("originalEstimateSeconds"))
+    if not field_id:
+        return False
+    raw = _flatten_field_value(fields.get(field_id))
+    return _is_positive_number(raw)
+
+
 def assignee_identity(assignee: dict[str, Any] | None) -> tuple[str | None, str | None]:
     """Ключ строки и отображаемое имя (Jira Cloud / Server)."""
     if not assignee:
@@ -239,8 +259,8 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
         fields.append(cust)
 
     for name in ("start_date", "end_date"):
-        source, fid = date_field_cfg(settings, name)
-        if source == "jira_field" and fid:
+        _, fid = date_field_cfg(settings, name)
+        if fid:
             fields.append(fid)
 
     # уникальный порядок
@@ -290,6 +310,13 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
 
         jira_start = parse_jira_date(fields.get(start_fid)) if start_src == "jira_field" and start_fid else None
         jira_end = parse_jira_date(fields.get(end_fid)) if end_src == "jira_field" and end_fid else None
+        missing_fields: list[str] = []
+        if start_fid and not parse_jira_date(fields.get(start_fid)):
+            missing_fields.append("дата начала")
+        if end_fid and not parse_jira_date(fields.get(end_fid)):
+            missing_fields.append("дата окончания")
+        if not has_jira_effort(fields, effort_type, effort_field_id):
+            missing_fields.append("трудозатраты")
 
         tasks.append(
             {
@@ -304,6 +331,7 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "color": color,
                 "jiraStartDate": jira_start,
                 "jiraEndDate": jira_end,
+                "missingFields": missing_fields,
                 "_rank": priority_rank(priority_name, order),
             }
         )

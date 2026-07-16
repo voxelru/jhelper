@@ -129,6 +129,11 @@
     return `${rounded} md`;
   }
 
+  function missingFieldsText(task) {
+    const fields = Array.isArray(task.missingFields) ? task.missingFields : [];
+    return fields.length ? fields.join(", ") : "";
+  }
+
   function hideTooltip() {
     tooltipEl.hidden = true;
     tooltipEl.innerHTML = "";
@@ -137,12 +142,14 @@
   function showTooltip(task, clientX, clientY) {
     const base = ((settings && settings.jiraBaseUrl) || "").replace(/\/$/, "");
     const { startIso, endIso } = resolveTaskDates(task);
+    const missingText = missingFieldsText(task);
     const keyLink = base
       ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
       : escapeHtml(task.key);
 
     tooltipEl.innerHTML = `
       <div class="tt-row"><span class="tt-label">Задача</span><span class="tt-val">${keyLink}</span></div>
+      ${missingText ? `<div class="tt-row"><span class="tt-label">Не заполнено</span><span class="tt-val">${escapeHtml(missingText)}</span></div>` : ""}
       <div class="tt-row"><span class="tt-label">Название</span><span class="tt-val">${escapeHtml(task.summary || "—")}</span></div>
       <div class="tt-row"><span class="tt-label">Заказчик</span><span class="tt-val">${escapeHtml(task.customer || "—")}</span></div>
       <div class="tt-row"><span class="tt-label">Начало</span><span class="tt-val">${escapeHtml(formatDateRu(startIso))}</span></div>
@@ -243,9 +250,13 @@
           ? `<a class="task-key" href="${escapeHtml(base)}/browse/${encodeURIComponent(t.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>`
           : `<span class="task-key">${escapeHtml(t.key)}</span>`;
         const statusHtml = `<span class="task-status">[${escapeHtml(t.status || "—")}]</span>`;
+        const missingText = missingFieldsText(t);
+        const missingHtml = missingText
+          ? `<span class="task-missing" title="Не заполнено: ${escapeHtml(missingText)}">!</span>`
+          : "";
 
         el.innerHTML = `
-          <div class="task-line task-line-key">${keyHtml} ${statusHtml}</div>
+          <div class="task-line task-line-key">${missingHtml}${keyHtml} ${statusHtml}</div>
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;

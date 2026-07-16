@@ -10,12 +10,12 @@ priorities:
     - Low
     - Lowest
   colors:
-    Highest: "#c62828"
-    High: "#ef6c00"
-    Medium: "#f9a825"
-    Low: "#2e7d32"
-    Lowest: "#546e7a"
-    default: "#78909c"
+    Highest: "#b85c5c"
+    High: "#c68452"
+    Medium: "#c2a24f"
+    Low: "#6f9a76"
+    Lowest: "#73879a"
+    default: "#7f8f9b"
 
 # Горизонт планирования на шкале дат.
 # kind: calendar_days — ровно count календарных дней от сегодня (на шкале только рабочие дни внутри интервала).

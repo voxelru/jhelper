@@ -210,6 +210,22 @@ body {
   opacity: 0.85;
 }
 
+.task-missing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: rgba(255, 244, 214, 0.92);
+  color: #8a5a00;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1;
+  vertical-align: text-bottom;
+}
+
 .task a.task-key:hover {
   opacity: 1;
 }
