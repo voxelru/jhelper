@@ -26,7 +26,7 @@ planning_horizon:
 
 pixels_per_working_day: 36
 
-# Откуда брать плановые трудозатраты (ширина прямоугольника в рабочих днях).
+# Откуда брать плановые трудозатраты (ширина прямоугольника и значение в подсказке, в рабочих днях).
 # type:
 #   timetracking_original — fields.timetracking.originalEstimateSeconds -> дни через working_hours_per_day
 #   timetracking_remaining — remainingEstimateSeconds
@@ -39,3 +39,20 @@ effort:
 # Если оценка отсутствует — минимальная длина в человеко-днях (md).
 min_effort_working_days: 1
 working_hours_per_day: 8
+
+# Поля для 3-й строки блока и всплывающей подсказки.
+fields:
+  # Заказчик — 3-я строка в прямоугольнике. Укажите ID кастомного поля Jira.
+  customer:
+    jira_field_id: null  # например customfield_10100
+
+  # Дата начала в подсказке.
+  # source: board — из позиции задачи на диаграмме; jira_field — из поля Jira (jira_field_id).
+  start_date:
+    source: board
+    jira_field_id: null  # например duedate / customfield_...
+
+  # Дата завершения в подсказке.
+  end_date:
+    source: board
+    jira_field_id: null

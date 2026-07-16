@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,31 @@ def effort_cfg(s: dict[str, Any]) -> tuple[str, str | None]:
     return t, fid
 
 
+def _field_cfg(s: dict[str, Any], name: str) -> dict[str, Any]:
+    fields = s.get("fields") or {}
+    cfg = fields.get(name) or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def date_field_cfg(s: dict[str, Any], name: str) -> tuple[str, str | None]:
+    cfg = _field_cfg(s, name)
+    source = str(cfg.get("source") or "board").lower().strip()
+    if source not in ("board", "jira_field"):
+        source = "board"
+    fid = cfg.get("jira_field_id")
+    if fid is not None:
+        fid = str(fid).strip() or None
+    return source, fid
+
+
+def customer_field_id(s: dict[str, Any]) -> str | None:
+    cfg = _field_cfg(s, "customer")
+    fid = cfg.get("jira_field_id")
+    if fid is not None:
+        fid = str(fid).strip() or None
+    return fid
+
+
 def planning_bounds(settings: dict[str, Any]) -> tuple[date, date]:
     kind, count = horizon_cfg(settings)
     start = date.today()
@@ -91,9 +116,7 @@ def effort_seconds_to_days(seconds: int | None, settings: dict[str, Any]) -> flo
 def _flatten_field_value(raw: Any) -> Any:
     if raw is None:
         return None
-    if isinstance(raw, (int, float)):
-        return raw
-    if isinstance(raw, str):
+    if isinstance(raw, (int, float, str, bool)):
         return raw
     if isinstance(raw, dict):
         if "value" in raw and isinstance(raw["value"], (int, float, str)):
@@ -103,6 +126,54 @@ def _flatten_field_value(raw: Any) -> Any:
         if raw.get("type") == "number" and "number" in raw:
             return raw.get("number")
     return raw
+
+
+def format_display_value(raw: Any) -> str | None:
+    """Человекочитаемое значение кастомного поля Jira (заказчик и т.п.)."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return "да" if raw else "нет"
+    if isinstance(raw, (int, float)):
+        return str(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        return text or None
+    if isinstance(raw, list):
+        parts = [format_display_value(x) for x in raw]
+        joined = ", ".join(p for p in parts if p)
+        return joined or None
+    if isinstance(raw, dict):
+        for key in ("displayName", "value", "name", "label", "emailAddress"):
+            if raw.get(key):
+                return str(raw[key]).strip() or None
+        if "child" in raw:
+            return format_display_value(raw.get("child"))
+    return str(raw)
+
+
+def parse_jira_date(raw: Any) -> str | None:
+    """Возвращает дату в ISO YYYY-MM-DD или None."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        raw = raw.get("value") or raw.get("date") or raw.get("startDate") or raw.get("endDate")
+    if isinstance(raw, (int, float)):
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10] if fmt == "%Y/%m/%d" and len(text) >= 10 else text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 def effort_days_for_issue(fields: dict[str, Any], effort_type: str, field_id: str | None, settings: dict[str, Any]) -> float:
@@ -157,9 +228,47 @@ def priority_rank(name: str | None, order: list[str]) -> int:
         return len(order) + 50
 
 
+def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
+    fields = ["summary", "assignee", "priority", "timetracking"]
+    effort_type, effort_field_id = effort_cfg(settings)
+    if effort_type in ("number_field", "seconds_field") and effort_field_id:
+        fields.append(effort_field_id)
+
+    cust = customer_field_id(settings)
+    if cust:
+        fields.append(cust)
+
+    for name in ("start_date", "end_date"):
+        source, fid = date_field_cfg(settings, name)
+        if source == "jira_field" and fid:
+            fields.append(fid)
+
+    # уникальный порядок
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in fields:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out
+
+
+def fields_public_cfg(s: dict[str, Any]) -> dict[str, Any]:
+    start_src, start_fid = date_field_cfg(s, "start_date")
+    end_src, end_fid = date_field_cfg(s, "end_date")
+    return {
+        "customer": {"jiraFieldId": customer_field_id(s)},
+        "startDate": {"source": start_src, "jiraFieldId": start_fid},
+        "endDate": {"source": end_src, "jiraFieldId": end_fid},
+    }
+
+
 def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
     effort_type, effort_field_id = effort_cfg(settings)
     order, colors = priorities_cfg(settings)
+    cust_fid = customer_field_id(settings)
+    start_src, start_fid = date_field_cfg(settings, "start_date")
+    end_src, end_fid = date_field_cfg(settings, "end_date")
 
     tasks: list[dict[str, Any]] = []
     for issue in raw_issues:
@@ -175,16 +284,23 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
 
         effort_days = effort_days_for_issue(fields, effort_type, effort_field_id, settings)
         color = colors.get(priority_name) or colors.get("default") or "#78909c"
+        customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
+
+        jira_start = parse_jira_date(fields.get(start_fid)) if start_src == "jira_field" and start_fid else None
+        jira_end = parse_jira_date(fields.get(end_fid)) if end_src == "jira_field" and end_fid else None
 
         tasks.append(
             {
                 "key": key,
                 "summary": summary,
+                "customer": customer,
                 "priority": priority_name,
                 "assigneeId": assignee_id,
                 "assigneeName": assignee_name,
                 "effortDays": round(effort_days, 4),
                 "color": color,
+                "jiraStartDate": jira_start,
+                "jiraEndDate": jira_end,
                 "_rank": priority_rank(priority_name, order),
             }
         )
@@ -259,6 +375,7 @@ def api_settings():
             "workingDates": working_dates,
             "workingDayCount": len(working_dates),
             "effort": {"type": etype, "jiraFieldId": efid},
+            "fields": fields_public_cfg(s),
             "jiraBaseUrl": (os.environ.get("JIRA_BASE_URL") or "").rstrip("/"),
         }
     )
@@ -273,14 +390,9 @@ def api_board():
     except JiraConfigError as e:
         return jsonify({"error": str(e)}), 400
 
-    effort_type, effort_field_id = effort_cfg(s)
-    fields = ["summary", "assignee", "priority", "timetracking"]
-    if effort_type in ("number_field", "seconds_field") and effort_field_id:
-        fields.append(effort_field_id)
-
     jql = s.get("jql") or "order by created DESC"
     try:
-        issues = search_issues_jql(base, session, jql, fields=fields)
+        issues = search_issues_jql(base, session, jql, fields=collect_jira_fields(s))
     except Exception as e:
         return jsonify({"error": f"Jira: {e}"}), 502
 
@@ -292,6 +404,8 @@ def api_board():
         "planningEnd": end.isoformat(),
         "workingDates": [d.isoformat() for d in iter_working_dates(start, end)],
         "pixelsPerWorkingDay": s.get("pixels_per_working_day", 36),
+        "fields": fields_public_cfg(s),
+        "jiraBaseUrl": (os.environ.get("JIRA_BASE_URL") or "").rstrip("/"),
     }
     return jsonify(board)
 

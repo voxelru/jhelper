@@ -1,5 +1,5 @@
 :root {
-  --row-height: 44px;
+  --row-height: 72px;
   --label-width: 200px;
   --header-height: 52px;
   --border: #cfd8dc;
@@ -154,23 +154,45 @@ body {
 
 .task {
   position: absolute;
-  top: 6px;
-  height: calc(var(--row-height) - 12px);
+  top: 4px;
+  height: calc(var(--row-height) - 8px);
   border-radius: 4px;
   color: #fff;
-  font-size: 0.72rem;
-  padding: 2px 6px;
+  font-size: 0.7rem;
+  padding: 4px 6px;
   cursor: grab;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   user-select: none;
   border: 1px solid rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  line-height: 1.15;
 }
 
 .task:active {
   cursor: grabbing;
+}
+
+.task-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-line-key {
+  font-weight: 700;
+}
+
+.task-line-title {
+  opacity: 0.95;
+}
+
+.task-line-customer {
+  opacity: 0.85;
+  font-size: 0.65rem;
 }
 
 .task .task-key {
@@ -194,6 +216,40 @@ body {
   outline: 2px dashed #1976d2;
   outline-offset: -4px;
   background-color: #e3f2fd;
+}
+
+.task-tooltip {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 10px 12px;
+  background: #263238;
+  color: #eceff1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.task-tooltip .tt-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px;
+  margin: 3px 0;
+}
+
+.task-tooltip .tt-label {
+  color: #90a4ae;
+}
+
+.task-tooltip .tt-val {
+  word-break: break-word;
+}
+
+.task-tooltip a {
+  color: #81d4fa;
 }
 
 .error-banner {

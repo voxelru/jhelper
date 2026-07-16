@@ -1,6 +1,6 @@
 /**
- * Доска: рабочие дни в шапке (выходные с нулевой шириной не рендерятся),
- * строки — сотрудники, блоки — задачи, ширина = effort в рабочих днях * ppd.
+ * Доска: рабочие дни в шапке, строки — сотрудники,
+ * блоки — 3 строки (ключ / title / заказчик), подсказка при наведении.
  */
 
 (function () {
@@ -16,6 +16,11 @@
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
 
+  const tooltipEl = document.createElement("div");
+  tooltipEl.className = "task-tooltip";
+  tooltipEl.hidden = true;
+  document.body.appendChild(tooltipEl);
+
   function setStatus(text, isError) {
     statusEl.textContent = text || "";
     statusEl.style.color = isError ? "#c62828" : "#546e7a";
@@ -25,6 +30,7 @@
     let off = 0;
     for (const t of tasks) {
       t.startOffsetDays = Math.round(off * 10000) / 10000;
+      t.durationDays = t.effortDays;
       off += t.durationDays;
     }
   }
@@ -58,13 +64,12 @@
     packRow(row.tasks);
   }
 
-  function indexFromClientX(rowEl, clientX) {
+  function indexFromClientX(rowEl, clientX, tasks) {
     const track = rowEl.querySelector(".row-track");
     const rect = track.getBoundingClientRect();
     const x = clientX - rect.left;
     const dayFloat = x / ppd;
     let acc = 0;
-    const tasks = row.tasks;
     for (let i = 0; i < tasks.length; i++) {
       const mid = acc + tasks[i].durationDays / 2;
       if (dayFloat < mid) return i;
@@ -73,8 +78,107 @@
     return tasks.length;
   }
 
+  function formatDateRu(iso) {
+    if (!iso) return "—";
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return iso;
+    return `${m[3]}.${m[2]}.${m[1]}`;
+  }
+
+  function boardDateAtOffset(offsetDays, forEnd) {
+    const dates = (settings && settings.workingDates) || [];
+    if (!dates.length) return null;
+    let idx;
+    if (forEnd) {
+      idx = Math.ceil(offsetDays) - 1;
+      if (offsetDays <= 0) idx = 0;
+    } else {
+      idx = Math.floor(offsetDays);
+    }
+    idx = Math.max(0, Math.min(dates.length - 1, idx));
+    return dates[idx];
+  }
+
+  function resolveTaskDates(t) {
+    const fields = (settings && settings.fields) || {};
+    const startSrc = (fields.startDate && fields.startDate.source) || "board";
+    const endSrc = (fields.endDate && fields.endDate.source) || "board";
+
+    let startIso = null;
+    let endIso = null;
+
+    if (startSrc === "jira_field" && t.jiraStartDate) {
+      startIso = t.jiraStartDate;
+    } else {
+      startIso = boardDateAtOffset(t.startOffsetDays, false);
+    }
+
+    if (endSrc === "jira_field" && t.jiraEndDate) {
+      endIso = t.jiraEndDate;
+    } else {
+      endIso = boardDateAtOffset(t.startOffsetDays + t.durationDays, true);
+    }
+
+    return { startIso, endIso };
+  }
+
+  function formatEffort(days) {
+    const n = Number(days);
+    if (!Number.isFinite(n)) return "—";
+    const rounded = Math.round(n * 100) / 100;
+    return `${rounded} md`;
+  }
+
+  function hideTooltip() {
+    tooltipEl.hidden = true;
+    tooltipEl.innerHTML = "";
+  }
+
+  function showTooltip(task, clientX, clientY) {
+    const base = ((settings && settings.jiraBaseUrl) || "").replace(/\/$/, "");
+    const { startIso, endIso } = resolveTaskDates(task);
+    const keyLink = base
+      ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
+      : escapeHtml(task.key);
+
+    tooltipEl.innerHTML = `
+      <div class="tt-row"><span class="tt-label">Задача</span><span class="tt-val">${keyLink}</span></div>
+      <div class="tt-row"><span class="tt-label">Название</span><span class="tt-val">${escapeHtml(task.summary || "—")}</span></div>
+      <div class="tt-row"><span class="tt-label">Заказчик</span><span class="tt-val">${escapeHtml(task.customer || "—")}</span></div>
+      <div class="tt-row"><span class="tt-label">Начало</span><span class="tt-val">${escapeHtml(formatDateRu(startIso))}</span></div>
+      <div class="tt-row"><span class="tt-label">Завершение</span><span class="tt-val">${escapeHtml(formatDateRu(endIso))}</span></div>
+      <div class="tt-row"><span class="tt-label">Трудозатраты</span><span class="tt-val">${escapeHtml(formatEffort(task.effortDays))}</span></div>
+    `;
+    tooltipEl.hidden = false;
+
+    const pad = 12;
+    const tw = tooltipEl.offsetWidth;
+    const th = tooltipEl.offsetHeight;
+    let left = clientX + pad;
+    let top = clientY + pad;
+    if (left + tw > window.innerWidth - 8) left = clientX - tw - pad;
+    if (top + th > window.innerHeight - 8) top = clientY - th - pad;
+    tooltipEl.style.left = `${Math.max(8, left)}px`;
+    tooltipEl.style.top = `${Math.max(8, top)}px`;
+  }
+
+  function wireTaskTooltip(el, task) {
+    el.addEventListener("mouseenter", (e) => {
+      if (dragState) return;
+      showTooltip(task, e.clientX, e.clientY);
+    });
+    el.addEventListener("mousemove", (e) => {
+      if (dragState || tooltipEl.hidden) return;
+      showTooltip(task, e.clientX, e.clientY);
+    });
+    el.addEventListener("mouseleave", () => {
+      hideTooltip();
+    });
+  }
+
   function render() {
     boardEl.innerHTML = "";
+    hideTooltip();
     if (!settings || !model) return;
 
     ppd = Number(settings.pixelsPerWorkingDay || 36);
@@ -133,12 +237,18 @@
         el.style.background = t.color;
         el.style.left = `${t.startOffsetDays * ppd}px`;
         el.style.width = `${Math.max(4, t.durationDays * ppd - 2)}px`;
-        el.title = `${t.key}: ${t.summary}\nПриоритет: ${t.priority || "—"}`;
+
         const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
         const keyHtml = base
           ? `<a class="task-key" href="${escapeHtml(base)}/browse/${encodeURIComponent(t.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>`
           : `<span class="task-key">${escapeHtml(t.key)}</span>`;
-        el.innerHTML = `${keyHtml} ${escapeHtml(t.summary)}`;
+
+        el.innerHTML = `
+          <div class="task-line task-line-key">${keyHtml}</div>
+          <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
+          <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
+        `;
+        wireTaskTooltip(el, t);
         track.appendChild(el);
       }
 
@@ -169,6 +279,7 @@
       if (!tEl || !trackEl.contains(tEl)) return;
       const task = row.tasks.find((x) => x.key === tEl.dataset.issueKey);
       if (!task) return;
+      hideTooltip();
       dragState = { task, sourceRow: row };
       tEl.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
@@ -200,7 +311,7 @@
       const { task: draggedTask, sourceRow } = dragState;
 
       const targetRow = row;
-      const idx = indexFromClientX(rowEl, e.clientX);
+      const idx = indexFromClientX(rowEl, e.clientX, targetRow.tasks);
 
       insertTaskAtIndex(targetRow, draggedTask, idx);
       if (sourceRow !== targetRow) {
@@ -229,6 +340,12 @@
       return;
     }
     model = data;
+    if (data.meta && data.meta.fields && settings) {
+      settings.fields = data.meta.fields;
+    }
+    if (data.meta && data.meta.jiraBaseUrl && settings) {
+      settings.jiraBaseUrl = data.meta.jiraBaseUrl;
+    }
     rebuildAllPacks();
     render();
     setStatus(`Задач: ${countTasks(model)}`);
