@@ -72,3 +72,40 @@ def search_issues_jql(
             break
         start_at += len(batch)
     return issues
+
+
+def update_issue_assignee(
+    base_url: str,
+    session: requests.Session,
+    issue_key: str,
+    assignee_id: str,
+) -> None:
+    """Меняет исполнителя задачи (Jira Server/DC: name; Cloud: accountId)."""
+    issue_url = f"{base_url}/rest/api/2/issue/{issue_key}"
+    payloads = [
+        {"fields": {"assignee": {"name": assignee_id}}},
+        {"fields": {"assignee": {"accountId": assignee_id}}},
+        {"fields": {"assignee": {"key": assignee_id}}},
+    ]
+    errors: list[str] = []
+    for payload in payloads:
+        r = session.put(issue_url, json=payload, timeout=60)
+        if r.status_code in (200, 204):
+            return
+        if r.status_code == 404:
+            r3 = session.put(
+                f"{base_url}/rest/api/3/issue/{issue_key}",
+                json=payload,
+                timeout=60,
+            )
+            if r3.status_code in (200, 204):
+                return
+            errors.append(f"{r3.status_code}: {r3.text[:300]}")
+            continue
+        # 400 часто значит «не тот идентификатор исполнителя» — пробуем следующий вариант
+        if r.status_code == 400:
+            errors.append(f"{r.status_code}: {r.text[:300]}")
+            continue
+        r.raise_for_status()
+    detail = " | ".join(errors) if errors else "unknown"
+    raise RuntimeError(f"Не удалось назначить исполнителя для {issue_key}: {detail}")

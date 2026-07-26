@@ -7,9 +7,16 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
-from jira_client import JiraConfigError, get_jira_session, search_issues_jql
+from jira_client import JiraConfigError, get_jira_session, search_issues_jql, update_issue_assignee
+from pending_changes import (
+    clear_pending,
+    pending_list,
+    read_pending,
+    upsert_pending,
+    write_pending,
+)
 
 load_dotenv()
 
@@ -327,6 +334,9 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "priority": priority_name,
                 "assigneeId": assignee_id,
                 "assigneeName": assignee_name,
+                "originalAssigneeId": assignee_id,
+                "originalAssigneeName": assignee_name,
+                "pendingAssignee": False,
                 "effortDays": round(effort_days, 4),
                 "color": color,
                 "jiraStartDate": jira_start,
@@ -380,6 +390,25 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
     return {"rows": rows}
 
 
+def apply_pending_assignees(
+    tasks: list[dict[str, Any]],
+    pending: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Накладывает локальные смены исполнителя на задачи до сборки строк."""
+    if not pending:
+        return tasks
+    for t in tasks:
+        key = t.get("key")
+        if not key or key not in pending:
+            t["pendingAssignee"] = False
+            continue
+        p = pending[key]
+        t["assigneeId"] = p["assigneeId"]
+        t["assigneeName"] = p["assigneeName"]
+        t["pendingAssignee"] = True
+    return tasks
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -428,6 +457,8 @@ def api_board():
         return jsonify({"error": f"Jira: {e}"}), 502
 
     tasks = normalize_issues(issues, s)
+    pending = read_pending(ROOT)
+    tasks = apply_pending_assignees(tasks, pending)
     board = build_rows(tasks, order)
     start, end = planning_bounds(s)
     board["meta"] = {
@@ -437,8 +468,77 @@ def api_board():
         "pixelsPerWorkingDay": s.get("pixels_per_working_day", 36),
         "fields": fields_public_cfg(s),
         "jiraBaseUrl": (os.environ.get("JIRA_BASE_URL") or "").rstrip("/"),
+        "pendingCount": len(pending),
     }
     return jsonify(board)
+
+
+@app.route("/api/pending", methods=["GET"])
+def api_pending_get():
+    changes = read_pending(ROOT)
+    return jsonify({"changes": pending_list(changes), "count": len(changes)})
+
+
+@app.route("/api/pending", methods=["POST"])
+def api_pending_post():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("key") or "").strip()
+    assignee_id = str(data.get("assigneeId") or "").strip()
+    assignee_name = str(data.get("assigneeName") or assignee_id).strip()
+    original = data.get("originalAssigneeId")
+    original_id = str(original).strip() if original is not None else None
+    if not key or not assignee_id:
+        return jsonify({"error": "Нужны key и assigneeId"}), 400
+    try:
+        changes = upsert_pending(
+            ROOT,
+            key,
+            assignee_id,
+            assignee_name,
+            original_assignee_id=original_id,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"changes": pending_list(changes), "count": len(changes)})
+
+
+@app.route("/api/save", methods=["POST"])
+def api_save():
+    changes = read_pending(ROOT)
+    if not changes:
+        return jsonify({"saved": 0, "failed": [], "message": "Нет изменений для сохранения"})
+
+    try:
+        base, session = get_jira_session()
+    except JiraConfigError as e:
+        return jsonify({"error": str(e)}), 400
+
+    saved = 0
+    failed: list[dict[str, str]] = []
+    remaining = dict(changes)
+
+    for key, item in list(changes.items()):
+        try:
+            update_issue_assignee(base, session, key, item["assigneeId"])
+            remaining.pop(key, None)
+            saved += 1
+        except Exception as e:
+            failed.append({"key": key, "error": str(e)})
+
+    if remaining:
+        write_pending(ROOT, remaining)
+    else:
+        clear_pending(ROOT)
+
+    status = 200 if not failed else 207
+    return jsonify(
+        {
+            "saved": saved,
+            "failed": failed,
+            "remaining": pending_list(remaining),
+            "count": len(remaining),
+        }
+    ), status
 
 
 if __name__ == "__main__":

@@ -1,17 +1,20 @@
 /**
  * Доска: рабочие дни в шапке, строки — сотрудники,
  * блоки — 3 строки (ключ / title / заказчик), подсказка при наведении.
+ * Смена исполнителя через drag-and-drop копится в файл до «Сохранить в Jira».
  */
 
 (function () {
   const boardEl = document.getElementById("board");
   const statusEl = document.getElementById("status");
   const btnRefresh = document.getElementById("btn-refresh");
+  const btnSave = document.getElementById("btn-save");
 
   let settings = null;
   /** @type {{ rows: any[], meta: any } | null} */
   let model = null;
   let ppd = 36;
+  let pendingCount = 0;
 
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
@@ -24,6 +27,15 @@
   function setStatus(text, isError) {
     statusEl.textContent = text || "";
     statusEl.style.color = isError ? "#c62828" : "#546e7a";
+  }
+
+  function updateSaveButton() {
+    const has = pendingCount > 0;
+    btnSave.disabled = !has;
+    btnSave.classList.toggle("has-pending", has);
+    btnSave.textContent = has
+      ? `Сохранить в Jira (${pendingCount})`
+      : "Сохранить в Jira";
   }
 
   function packRow(tasks) {
@@ -61,6 +73,8 @@
     row.tasks.splice(i, 0, task);
     task.assigneeId = row.assigneeId;
     task.assigneeName = row.assigneeName;
+    const original = task.originalAssigneeId;
+    task.pendingAssignee = original != null && String(original) !== String(row.assigneeId);
     packRow(row.tasks);
   }
 
@@ -146,9 +160,13 @@
     const keyLink = base
       ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
       : escapeHtml(task.key);
+    const pendingRow = task.pendingAssignee
+      ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">исполнитель не сохранён в Jira</span></div>`
+      : "";
 
     tooltipEl.innerHTML = `
       <div class="tt-row"><span class="tt-label">Задача</span><span class="tt-val">${keyLink}</span></div>
+      ${pendingRow}
       ${missingText ? `<div class="tt-row"><span class="tt-label">Не заполнено</span><span class="tt-val">${escapeHtml(missingText)}</span></div>` : ""}
       <div class="tt-row"><span class="tt-label">Название</span><span class="tt-val">${escapeHtml(task.summary || "—")}</span></div>
       <div class="tt-row"><span class="tt-label">Заказчик</span><span class="tt-val">${escapeHtml(task.customer || "—")}</span></div>
@@ -238,7 +256,7 @@
 
       for (const t of row.tasks) {
         const el = document.createElement("div");
-        el.className = "task";
+        el.className = "task" + (t.pendingAssignee ? " pending" : "");
         el.draggable = true;
         el.dataset.issueKey = t.key;
         el.style.background = t.color;
@@ -281,6 +299,24 @@
       .replace(/"/g, "&quot;");
   }
 
+  async function recordPendingAssignee(task) {
+    const r = await fetch("/api/pending", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: task.key,
+        assigneeId: task.assigneeId,
+        assigneeName: task.assigneeName,
+        originalAssigneeId: task.originalAssigneeId,
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    pendingCount = data.count || 0;
+    updateSaveButton();
+    return data;
+  }
+
   function wireRowDragDrop(rowEl, trackEl, row) {
     trackEl.addEventListener("dragstart", (e) => {
       if (e.target.closest("a.task-key")) {
@@ -321,6 +357,7 @@
       trackEl.classList.remove("drag-target");
       if (!dragState) return;
       const { task: draggedTask, sourceRow } = dragState;
+      const prevAssigneeId = draggedTask.assigneeId;
 
       const targetRow = row;
       const idx = indexFromClientX(rowEl, e.clientX, targetRow.tasks);
@@ -330,7 +367,20 @@
         packRow(sourceRow.tasks);
       }
       render();
-      setStatus("Порядок изменён только в интерфейсе (в Jira не записывается).");
+
+      const assigneeChanged = String(prevAssigneeId) !== String(targetRow.assigneeId);
+      if (assigneeChanged) {
+        recordPendingAssignee(draggedTask)
+          .then(() => {
+            const msg = pendingCount
+              ? `Смена исполнителя накоплена в файл (${pendingCount}). Нажмите «Сохранить в Jira».`
+              : "Исполнитель возвращён к значению из Jira; запись из файла удалена.";
+            setStatus(msg);
+          })
+          .catch((err) => setStatus(String(err.message || err), true));
+      } else {
+        setStatus("Порядок изменён только в интерфейсе (в Jira не записывается).");
+      }
     });
   }
 
@@ -358,18 +408,57 @@
     if (data.meta && data.meta.jiraBaseUrl && settings) {
       settings.jiraBaseUrl = data.meta.jiraBaseUrl;
     }
+    pendingCount = (data.meta && data.meta.pendingCount) || 0;
+    updateSaveButton();
     rebuildAllPacks();
     render();
-    setStatus(`Задач: ${countTasks(model)}`);
+    const base = `Задач: ${countTasks(model)}`;
+    setStatus(
+      pendingCount
+        ? `${base}. Несохранённых смен исполнителя: ${pendingCount}`
+        : base
+    );
   }
 
   function countTasks(m) {
     return m.rows.reduce((a, r) => a + r.tasks.length, 0);
   }
 
+  async function saveToJira() {
+    if (pendingCount <= 0) return;
+    btnSave.disabled = true;
+    setStatus("Сохранение в Jira…");
+    try {
+      const r = await fetch("/api/save", { method: "POST" });
+      const data = await r.json();
+      if (!r.ok && r.status !== 207) {
+        throw new Error(data.error || r.statusText);
+      }
+      pendingCount = data.count || 0;
+      updateSaveButton();
+      const failed = Array.isArray(data.failed) ? data.failed : [];
+      if (failed.length) {
+        const keys = failed.map((f) => f.key).join(", ");
+        setStatus(`Сохранено: ${data.saved || 0}. Ошибки: ${keys}`, true);
+      } else {
+        setStatus(`Сохранено в Jira: ${data.saved || 0}`);
+      }
+      await loadBoard();
+    } catch (e) {
+      updateSaveButton();
+      setStatus(String(e.message || e), true);
+    }
+  }
+
   btnRefresh.addEventListener("click", () => {
     loadBoard().catch((e) => setStatus(String(e.message || e), true));
   });
+
+  btnSave.addEventListener("click", () => {
+    saveToJira().catch((e) => setStatus(String(e.message || e), true));
+  });
+
+  updateSaveButton();
 
   loadSettings()
     .then(() => loadBoard())
