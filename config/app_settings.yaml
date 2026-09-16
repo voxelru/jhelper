@@ -40,19 +40,26 @@ effort:
 min_effort_working_days: 1
 working_hours_per_day: 8
 
-# Поля для 3-й строки блока и всплывающей подсказки.
+# Поля для 3-й строки блока, всплывающей подсказки и фильтра по спринту.
 fields:
   # Заказчик — 3-я строка в прямоугольнике. Укажите ID кастомного поля Jira.
   customer:
     jira_field_id: null  # например customfield_10100
 
-  # Дата начала в подсказке.
+  # Спринт — используется для выпадающего фильтра в шапке страницы.
+  sprint:
+    jira_field_id: null  # например customfield_10007
+
+  # Дата начала в подсказке. Если source: jira_field и в Jira дата заполнена,
+  # задача встаёт на диаграмме на эту дату (а не по очереди в строке сотрудника).
   # source: board — из позиции задачи на диаграмме; jira_field — из поля Jira (jira_field_id).
   start_date:
     source: board
     jira_field_id: null  # например duedate / customfield_...
 
-  # Дата завершения в подсказке.
+  # Дата завершения в подсказке. Если start_date не задана из Jira, но задана
+  # эта дата (source: jira_field), задача встаёт на диаграмме так, чтобы
+  # закончиться в эту дату.
   end_date:
     source: board
     jira_field_id: null

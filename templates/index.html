@@ -9,6 +9,10 @@
 <body>
   <header class="toolbar">
     <h1>План задач</h1>
+    <label class="sprint-filter-label" for="sprint-filter">Спринт:</label>
+    <select id="sprint-filter">
+      <option value="">Все спринты</option>
+    </select>
     <button type="button" id="btn-refresh">Обновить из Jira</button>
     <button type="button" id="btn-save" disabled>Сохранить в Jira</button>
     <span id="status" class="status"></span>

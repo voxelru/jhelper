@@ -10,16 +10,30 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 
 from board_logic import (
-    apply_pending_assignees,
+    apply_pending_changes,
     build_rows,
     collect_jira_fields,
+    effort_days_to_jira_raw,
     fields_public_cfg,
     iter_working_dates,
     normalize_issues,
     planning_bounds,
 )
-from jira_client import JiraConfigError, get_jira_session, search_issues_jql, update_issue_assignee
-from pending_changes import clear_pending, pending_list, read_pending, upsert_pending, write_pending
+from jira_client import (
+    JiraConfigError,
+    get_jira_session,
+    search_issues_jql,
+    update_issue_assignee,
+    update_issue_effort,
+)
+from pending_changes import (
+    clear_pending,
+    pending_list,
+    read_pending,
+    upsert_pending_assignee,
+    upsert_pending_effort,
+    write_pending,
+)
 from settings import effort_cfg, horizon_cfg, load_settings, priorities_cfg
 
 load_dotenv()
@@ -57,6 +71,7 @@ def api_settings():
             "workingDates": working_dates,
             "workingDayCount": len(working_dates),
             "effort": {"type": etype, "jiraFieldId": efid},
+            "minEffortWorkingDays": s.get("min_effort_working_days", 1),
             "fields": fields_public_cfg(s),
             "jiraBaseUrl": jira_base_url(),
         }
@@ -80,7 +95,8 @@ def api_board():
 
     tasks = normalize_issues(issues, s)
     pending = read_pending(ROOT)
-    tasks = apply_pending_assignees(tasks, pending)
+    tasks = apply_pending_changes(tasks, pending)
+    sprints = sorted({t["sprint"] for t in tasks if t.get("sprint")})
     board = build_rows(tasks, order)
     start, end = planning_bounds(s)
     board["meta"] = {
@@ -91,6 +107,7 @@ def api_board():
         "fields": fields_public_cfg(s),
         "jiraBaseUrl": jira_base_url(),
         "pendingCount": len(pending),
+        "sprints": sprints,
     }
     return jsonify(board)
 
@@ -112,12 +129,32 @@ def api_pending_post():
     if not key or not assignee_id:
         return jsonify({"error": "Нужны key и assigneeId"}), 400
     try:
-        changes = upsert_pending(
+        changes = upsert_pending_assignee(
             ROOT,
             key,
             assignee_id,
             assignee_name,
             original_assignee_id=original_id,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"changes": pending_list(changes), "count": len(changes)})
+
+
+@app.route("/api/pending/effort", methods=["POST"])
+def api_pending_effort_post():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("key") or "").strip()
+    effort_days = data.get("effortDays")
+    original_effort_days = data.get("originalEffortDays")
+    if not key or effort_days is None:
+        return jsonify({"error": "Нужны key и effortDays"}), 400
+    try:
+        changes = upsert_pending_effort(
+            ROOT,
+            key,
+            float(effort_days),
+            original_effort_days=float(original_effort_days) if original_effort_days is not None else None,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -130,6 +167,9 @@ def api_save():
     if not changes:
         return jsonify({"saved": 0, "failed": [], "message": "Нет изменений для сохранения"})
 
+    s = load_settings()
+    effort_type, effort_field_id = effort_cfg(s)
+
     try:
         base, session = get_jira_session()
     except JiraConfigError as e:
@@ -137,15 +177,31 @@ def api_save():
 
     saved = 0
     failed: list[dict[str, str]] = []
-    remaining = dict(changes)
+    remaining: dict[str, dict] = {}
 
-    for key, item in list(changes.items()):
-        try:
-            update_issue_assignee(base, session, key, item["assigneeId"])
-            remaining.pop(key, None)
-            saved += 1
-        except Exception as e:
-            failed.append({"key": key, "error": str(e)})
+    for key, item in changes.items():
+        remaining_item: dict = {}
+
+        if "assigneeId" in item:
+            try:
+                update_issue_assignee(base, session, key, item["assigneeId"])
+                saved += 1
+            except Exception as e:
+                failed.append({"key": key, "field": "assignee", "error": str(e)})
+                remaining_item["assigneeId"] = item["assigneeId"]
+                remaining_item["assigneeName"] = item.get("assigneeName", item["assigneeId"])
+
+        if "effortDays" in item:
+            try:
+                raw = effort_days_to_jira_raw(item["effortDays"], effort_type, s)
+                update_issue_effort(base, session, key, effort_type, effort_field_id, raw)
+                saved += 1
+            except Exception as e:
+                failed.append({"key": key, "field": "effort", "error": str(e)})
+                remaining_item["effortDays"] = item["effortDays"]
+
+        if remaining_item:
+            remaining[key] = remaining_item
 
     if remaining:
         write_pending(ROOT, remaining)

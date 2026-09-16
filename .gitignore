@@ -3,4 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-pending_assignee_changes.txt
+pending_changes.json

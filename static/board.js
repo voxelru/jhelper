@@ -1,7 +1,8 @@
 /**
  * Доска: рабочие дни в шапке, строки — сотрудники,
  * блоки — 3 строки (ключ / title / заказчик), подсказка при наведении.
- * Смена исполнителя через drag-and-drop копится в файл до «Сохранить в Jira».
+ * Смена исполнителя (drag-and-drop) и изменение трудозатрат (растягивание
+ * прямоугольника) копятся до нажатия «Сохранить в Jira».
  */
 
 (function () {
@@ -9,15 +10,19 @@
   const statusEl = document.getElementById("status");
   const btnRefresh = document.getElementById("btn-refresh");
   const btnSave = document.getElementById("btn-save");
+  const sprintFilterEl = document.getElementById("sprint-filter");
 
   let settings = null;
   /** @type {{ rows: any[], meta: any } | null} */
   let model = null;
   let ppd = 36;
   let pendingCount = 0;
+  let selectedSprint = "";
 
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
+  /** @type {{ task: any, row: any } | null} */
+  let resizeState = null;
 
   const tooltipEl = document.createElement("div");
   tooltipEl.className = "task-tooltip";
@@ -57,6 +62,20 @@
     for (const row of model.rows) {
       packRow(row.tasks);
     }
+  }
+
+  function populateSprintFilter() {
+    const sprints = (model && model.meta && model.meta.sprints) || [];
+    const prev = selectedSprint;
+    sprintFilterEl.innerHTML = '<option value="">Все спринты</option>';
+    for (const name of sprints) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sprintFilterEl.appendChild(opt);
+    }
+    selectedSprint = sprints.includes(prev) ? prev : "";
+    sprintFilterEl.value = selectedSprint;
   }
 
   function removeTaskFromAllRows(task) {
@@ -160,8 +179,11 @@
     const keyLink = base
       ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
       : escapeHtml(task.key);
-    const pendingRow = task.pendingAssignee
-      ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">исполнитель не сохранён в Jira</span></div>`
+    const pendingParts = [];
+    if (task.pendingAssignee) pendingParts.push("исполнитель");
+    if (task.pendingEffort) pendingParts.push("трудозатраты");
+    const pendingRow = pendingParts.length
+      ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">${escapeHtml(pendingParts.join(", "))} не сохранены в Jira</span></div>`
       : "";
 
     tooltipEl.innerHTML = `
@@ -189,15 +211,58 @@
 
   function wireTaskTooltip(el, task) {
     el.addEventListener("mouseenter", (e) => {
-      if (dragState) return;
+      if (dragState || resizeState) return;
       showTooltip(task, e.clientX, e.clientY);
     });
     el.addEventListener("mousemove", (e) => {
-      if (dragState || tooltipEl.hidden) return;
+      if (dragState || resizeState || tooltipEl.hidden) return;
       showTooltip(task, e.clientX, e.clientY);
     });
     el.addEventListener("mouseleave", () => {
       hideTooltip();
+    });
+  }
+
+  function wireTaskResize(handleEl, task, row) {
+    handleEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hideTooltip();
+
+      const startX = e.clientX;
+      const startDuration = task.durationDays;
+      const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
+      resizeState = { task, row };
+
+      const onMove = (ev) => {
+        const deltaDays = (ev.clientX - startX) / ppd;
+        let next = Math.round((startDuration + deltaDays) * 4) / 4;
+        next = Math.max(minDays, next);
+        if (next !== task.durationDays) {
+          task.durationDays = next;
+          task.effortDays = next;
+          packRow(row.tasks);
+          render();
+        }
+      };
+
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        resizeState = null;
+        recordPendingEffort(task)
+          .then(() => {
+            setStatus(
+              pendingCount
+                ? `Трудозатраты изменены (накоплено изменений: ${pendingCount}). Нажмите «Сохранить в Jira».`
+                : "Трудозатраты возвращены к значению из Jira; запись удалена."
+            );
+          })
+          .catch((err) => setStatus(String(err.message || err), true));
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
     });
   }
 
@@ -241,6 +306,11 @@
     inner.appendChild(header);
 
     for (const row of model.rows) {
+      const visibleTasks = selectedSprint
+        ? row.tasks.filter((t) => t.sprint === selectedSprint)
+        : row.tasks;
+      if (!visibleTasks.length) continue;
+
       const rowEl = document.createElement("div");
       rowEl.className = "board-row";
       rowEl.dataset.assigneeId = row.assigneeId || "";
@@ -254,9 +324,13 @@
       track.className = "row-track";
       track.style.width = `${totalTrackWidth()}px`;
 
-      for (const t of row.tasks) {
+      for (const t of visibleTasks) {
         const el = document.createElement("div");
-        el.className = "task" + (t.pendingAssignee ? " pending" : "");
+        const isResizing = !!(resizeState && resizeState.task === t);
+        el.className =
+          "task" +
+          (t.pendingAssignee || t.pendingEffort ? " pending" : "") +
+          (isResizing ? " resizing" : "");
         el.draggable = true;
         el.dataset.issueKey = t.key;
         el.style.background = t.color;
@@ -278,7 +352,13 @@
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;
+        const resizeEl = document.createElement("div");
+        resizeEl.className = "task-resize";
+        resizeEl.title = "Изменить трудозатраты";
+        el.appendChild(resizeEl);
+
         wireTaskTooltip(el, t);
+        wireTaskResize(resizeEl, t, row);
         track.appendChild(el);
       }
 
@@ -314,6 +394,25 @@
     if (!r.ok) throw new Error(data.error || r.statusText);
     pendingCount = data.count || 0;
     updateSaveButton();
+    return data;
+  }
+
+  async function recordPendingEffort(task) {
+    const r = await fetch("/api/pending/effort", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: task.key,
+        effortDays: task.effortDays,
+        originalEffortDays: task.originalEffortDays,
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    task.pendingEffort = task.effortDays !== task.originalEffortDays;
+    pendingCount = data.count || 0;
+    updateSaveButton();
+    render();
     return data;
   }
 
@@ -410,12 +509,13 @@
     }
     pendingCount = (data.meta && data.meta.pendingCount) || 0;
     updateSaveButton();
+    populateSprintFilter();
     rebuildAllPacks();
     render();
     const base = `Задач: ${countTasks(model)}`;
     setStatus(
       pendingCount
-        ? `${base}. Несохранённых смен исполнителя: ${pendingCount}`
+        ? `${base}. Несохранённых изменений: ${pendingCount}`
         : base
     );
   }
@@ -456,6 +556,11 @@
 
   btnSave.addEventListener("click", () => {
     saveToJira().catch((e) => setStatus(String(e.message || e), true));
+  });
+
+  sprintFilterEl.addEventListener("change", () => {
+    selectedSprint = sprintFilterEl.value;
+    render();
   });
 
   updateSaveButton();

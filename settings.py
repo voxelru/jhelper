@@ -68,3 +68,11 @@ def customer_field_id(s: dict[str, Any]) -> str | None:
     if fid is not None:
         fid = str(fid).strip() or None
     return fid
+
+
+def sprint_field_id(s: dict[str, Any]) -> str | None:
+    """ID поля Jira со спринтом: fields.sprint.jira_field_id."""
+    fid = _field_cfg(s, "sprint").get("jira_field_id")
+    if fid is not None:
+        fid = str(fid).strip() or None
+    return fid

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -13,6 +14,7 @@ from settings import (
     effort_cfg,
     horizon_cfg,
     priorities_cfg,
+    sprint_field_id,
 )
 
 # Системные поля Jira, которые нужны всегда вне зависимости от настроек.
@@ -42,6 +44,24 @@ def iter_working_dates(start: date, end: date) -> list[date]:
             out.append(d)
         d += timedelta(days=1)
     return out
+
+
+def working_days_between(start: date, end: date) -> int:
+    """Число рабочих дней от start (включительно) до end (не включая), знак — как у (end-start)."""
+    if end == start:
+        return 0
+    sign = 1
+    a, b = start, end
+    if end < start:
+        a, b = end, start
+        sign = -1
+    count = 0
+    d = a
+    while d < b:
+        if d.weekday() < 5:
+            count += 1
+        d += timedelta(days=1)
+    return sign * count
 
 
 def effort_seconds_to_days(seconds: int | None, settings: dict[str, Any]) -> float:
@@ -158,6 +178,54 @@ def effort_days_for_issue(
     return min_d
 
 
+def effort_days_to_minutes(days: float, settings: dict[str, Any]) -> int:
+    wh = float(settings.get("working_hours_per_day", 8))
+    return max(1, round(float(days) * wh * 60.0))
+
+
+def effort_days_to_seconds(days: float, settings: dict[str, Any]) -> int:
+    wh = float(settings.get("working_hours_per_day", 8))
+    return max(1, round(float(days) * wh * 3600.0))
+
+
+def effort_days_to_jira_raw(days: float, effort_type: str, settings: dict[str, Any]) -> Any:
+    """Готовит значение трудозатрат в формате, который ожидает Jira при записи."""
+    if effort_type in ("timetracking_original", "timetracking_remaining"):
+        return f"{effort_days_to_minutes(days, settings)}m"
+    if effort_type == "seconds_field":
+        return effort_days_to_seconds(days, settings)
+    if effort_type == "number_field":
+        return round(float(days), 2)
+    raise ValueError(f"Сохранение трудозатрат не поддерживается для типа {effort_type}")
+
+
+def parse_sprint_value(raw: Any) -> str | None:
+    """Достаёт имя (текущего/последнего) спринта из поля Jira Sprint.
+
+    Поддерживает и современный формат (список словарей с name/state),
+    и устаревший строковый формат Jira Server/DC
+    ("com.atlassian.greenhopper...Sprint@...[...,name=Спринт 5,...]").
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        for item in reversed(raw):
+            name = parse_sprint_value(item)
+            if name:
+                return name
+        return None
+    if isinstance(raw, dict):
+        name = raw.get("name")
+        return str(name).strip() or None if name else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    m = re.search(r"name=([^,\]]+)", text)
+    if m:
+        return m.group(1).strip() or None
+    return text
+
+
 def _is_positive_number(raw: Any) -> bool:
     try:
         return raw is not None and float(raw) > 0
@@ -209,6 +277,10 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
     if cust:
         fields.append(cust)
 
+    sprint_fid = sprint_field_id(settings)
+    if sprint_fid:
+        fields.append(sprint_fid)
+
     for name in ("start_date", "end_date"):
         _, fid = date_field_cfg(settings, name)
         if fid:
@@ -229,6 +301,7 @@ def fields_public_cfg(s: dict[str, Any]) -> dict[str, Any]:
     end_src, end_fid = date_field_cfg(s, "end_date")
     return {
         "customer": {"jiraFieldId": customer_field_id(s)},
+        "sprint": {"jiraFieldId": sprint_field_id(s)},
         "startDate": {"source": start_src, "jiraFieldId": start_fid},
         "endDate": {"source": end_src, "jiraFieldId": end_fid},
     }
@@ -239,8 +312,10 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
     effort_type, effort_field_id = effort_cfg(settings)
     order, colors = priorities_cfg(settings)
     cust_fid = customer_field_id(settings)
+    sprint_fid = sprint_field_id(settings)
     start_src, start_fid = date_field_cfg(settings, "start_date")
     end_src, end_fid = date_field_cfg(settings, "end_date")
+    planning_start, _planning_end = planning_bounds(settings)
 
     tasks: list[dict[str, Any]] = []
     for issue in raw_issues:
@@ -259,9 +334,19 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
         effort_days = effort_days_for_issue(fields, effort_type, effort_field_id, settings)
         color = colors.get(priority_name) or colors.get("default") or "#78909c"
         customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
+        sprint = parse_sprint_value(fields.get(sprint_fid)) if sprint_fid else None
 
         jira_start = parse_jira_date(fields.get(start_fid)) if start_src == "jira_field" and start_fid else None
         jira_end = parse_jira_date(fields.get(end_fid)) if end_src == "jira_field" and end_fid else None
+
+        # Задача «в приоритете» по срокам: если в Jira назначена дата начала (или
+        # только окончания), задача встаёт на диаграмме на неё, а не в очередь.
+        pinned_offset: float | None = None
+        if jira_start:
+            pinned_offset = max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
+        elif jira_end:
+            end_offset = working_days_between(planning_start, date.fromisoformat(jira_end)) + 1
+            pinned_offset = max(0.0, float(end_offset) - effort_days)
 
         missing_fields: list[str] = []
         if start_fid and not parse_jira_date(fields.get(start_fid)):
@@ -277,16 +362,20 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "summary": summary,
                 "status": status_name,
                 "customer": customer,
+                "sprint": sprint,
                 "priority": priority_name,
                 "assigneeId": assignee_id,
                 "assigneeName": assignee_name,
                 "originalAssigneeId": assignee_id,
                 "originalAssigneeName": assignee_name,
                 "pendingAssignee": False,
+                "pendingEffort": False,
                 "effortDays": round(effort_days, 4),
+                "originalEffortDays": round(effort_days, 4),
                 "color": color,
                 "jiraStartDate": jira_start,
                 "jiraEndDate": jira_end,
+                "pinnedStartOffsetDays": round(pinned_offset, 4) if pinned_offset is not None else None,
                 "missingFields": missing_fields,
                 "_rank": priority_rank(priority_name, order),
             }
@@ -298,8 +387,18 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
     return tasks
 
 
+def _without_pinned_marker(item: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in item.items() if k != "pinnedStartOffsetDays"}
+
+
 def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
-    """Группирует задачи по исполнителю и раскладывает их подряд без зазоров."""
+    """Группирует задачи по исполнителю и раскладывает их на диаграмме.
+
+    Задачи с назначенным сроком (pinnedStartOffsetDays задан в normalize_issues,
+    когда в Jira указана дата начала/окончания) встают на диаграмме фиксированно
+    на эту позицию. Остальные задачи заполняют свободные промежутки между ними
+    подряд без зазоров, в порядке приоритета — как раньше.
+    """
     by_assignee: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
         aid = t.get("assigneeId")
@@ -315,39 +414,62 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for aid, group_raw in by_assignee.items():
         group = sorted(group_raw, key=sort_key)
-        offset = 0.0
-        placed: list[dict[str, Any]] = []
         display_name = (group[0].get("assigneeName") if group else None) or aid
-        for item in group:
+
+        pinned_raw = [t for t in group if t.get("pinnedStartOffsetDays") is not None]
+        free = [t for t in group if t.get("pinnedStartOffsetDays") is None]
+
+        pinned_raw.sort(key=lambda t: (float(t["pinnedStartOffsetDays"]), *sort_key(t)))
+
+        placed: list[dict[str, Any]] = []
+        occupied: list[tuple[float, float]] = []
+        cursor = 0.0
+        for item in pinned_raw:
             effort = float(item["effortDays"])
-            placed.append(
-                {
-                    **item,
-                    "startOffsetDays": round(offset, 4),
-                    "durationDays": effort,
-                }
-            )
-            offset += effort
+            start = max(float(item["pinnedStartOffsetDays"]), cursor)
+            placed.append({**_without_pinned_marker(item), "startOffsetDays": round(start, 4), "durationDays": effort})
+            end = start + effort
+            occupied.append((start, end))
+            cursor = end
+
+        for item in free:
+            effort = float(item["effortDays"])
+            start = 0.0
+            while True:
+                blocker = next((o for o in occupied if o[0] < start + effort and o[1] > start), None)
+                if blocker is None:
+                    break
+                start = blocker[1]
+            placed.append({**_without_pinned_marker(item), "startOffsetDays": round(start, 4), "durationDays": effort})
+            occupied.append((start, start + effort))
+            occupied.sort(key=lambda o: o[0])
+
+        placed.sort(key=lambda t: (t["startOffsetDays"], *sort_key(t)))
         rows.append({"assigneeId": aid, "assigneeName": display_name, "tasks": placed})
 
     rows.sort(key=lambda r: (r.get("assigneeName") or "").casefold())
     return {"rows": rows}
 
 
-def apply_pending_assignees(
+def apply_pending_changes(
     tasks: list[dict[str, Any]],
-    pending: dict[str, dict[str, str]],
+    pending: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Накладывает локальные несохранённые смены исполнителя на задачи."""
-    if not pending:
-        return tasks
+    """Накладывает локальные несохранённые изменения (исполнитель, трудозатраты) на задачи."""
     for t in tasks:
         key = t.get("key")
-        if not key or key not in pending:
+        item = pending.get(key) if (pending and key) else None
+
+        if item and "assigneeId" in item:
+            t["assigneeId"] = item["assigneeId"]
+            t["assigneeName"] = item.get("assigneeName") or item["assigneeId"]
+            t["pendingAssignee"] = True
+        else:
             t["pendingAssignee"] = False
-            continue
-        p = pending[key]
-        t["assigneeId"] = p["assigneeId"]
-        t["assigneeName"] = p["assigneeName"]
-        t["pendingAssignee"] = True
+
+        if item and "effortDays" in item:
+            t["effortDays"] = float(item["effortDays"])
+            t["pendingEffort"] = True
+        else:
+            t["pendingEffort"] = False
     return tasks
