@@ -173,6 +173,24 @@
     return dates[idx];
   }
 
+  function workingDateIndex(iso) {
+    const dates = (settings && settings.workingDates) || [];
+    const idx = dates.indexOf(iso);
+    return idx === -1 ? null : idx;
+  }
+
+  /**
+   * Для задачи, «прибитой» только по дате окончания (jiraEndDate есть,
+   * jiraStartDate нет), пересчитывает startOffsetDays под новую длительность
+   * так, чтобы дата окончания оставалась на месте.
+   */
+  function repinByEndDateIfNeeded(task) {
+    if (task.jiraStartDate || !task.jiraEndDate) return;
+    const endIdx = workingDateIndex(task.jiraEndDate);
+    if (endIdx == null) return;
+    task.pinnedStartOffsetDays = Math.max(0, endIdx + 1 - task.durationDays);
+  }
+
   function resolveTaskDates(t) {
     const fields = (settings && settings.fields) || {};
     const startSrc = (fields.startDate && fields.startDate.source) || "board";
@@ -292,6 +310,7 @@
         if (next !== task.durationDays) {
           task.durationDays = next;
           task.effortDays = next;
+          repinByEndDateIfNeeded(task);
           packRow(row.tasks);
           render();
         }
@@ -301,12 +320,27 @@
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
         resizeState = null;
-        recordPendingEffort(task)
+
+        const pending = [recordPendingEffort(task)];
+
+        // Изменение ширины меняет длительность, а значит и дату окончания
+        // (и, для задач, «прибитых» по дате окончания, дату начала) — но
+        // только для задач с уже закреплённым положением (перетаскиванием
+        // или назначенной в Jira датой). У свободных задач положение —
+        // расчётное и не должно само по себе становиться датой в Jira.
+        if (task.pinnedStartOffsetDays != null) {
+          const { startIso, endIso } = computeDatesForOffset(task, task.startOffsetDays);
+          if (dateFieldWritable("startDate")) task.jiraStartDate = startIso;
+          if (dateFieldWritable("endDate")) task.jiraEndDate = endIso;
+          pending.push(recordPendingDates(task, startIso, endIso));
+        }
+
+        Promise.all(pending)
           .then(() => {
             setStatus(
               pendingCount
-                ? `Трудозатраты изменены (накоплено изменений: ${pendingCount}). Нажмите «Сохранить в Jira».`
-                : "Трудозатраты возвращены к значению из Jira; запись удалена."
+                ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`
+                : "Изменения возвращены к значениям из Jira; записи удалены."
             );
           })
           .catch((err) => setStatus(String(err.message || err), true));
