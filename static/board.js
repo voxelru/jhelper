@@ -192,20 +192,16 @@
   }
 
   function resolveTaskDates(t) {
-    const fields = (settings && settings.fields) || {};
-    const startSrc = (fields.startDate && fields.startDate.source) || "board";
-    const endSrc = (fields.endDate && fields.endDate.source) || "board";
-
     let startIso = null;
     let endIso = null;
 
-    if (startSrc === "jira_field" && t.jiraStartDate) {
+    if (t.jiraStartDate) {
       startIso = t.jiraStartDate;
     } else {
       startIso = boardDateAtOffset(t.startOffsetDays, false);
     }
 
-    if (endSrc === "jira_field" && t.jiraEndDate) {
+    if (t.jiraEndDate) {
       endIso = t.jiraEndDate;
     } else {
       endIso = boardDateAtOffset(t.startOffsetDays + t.durationDays, true);
@@ -505,7 +501,7 @@
   function dateFieldWritable(name) {
     const fields = (settings && settings.fields) || {};
     const cfg = fields[name];
-    return !!(cfg && cfg.source === "jira_field" && cfg.jiraFieldId);
+    return !!(cfg && cfg.jiraFieldId);
   }
 
   async function recordPendingDates(task, startIso, endIso) {

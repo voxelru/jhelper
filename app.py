@@ -209,8 +209,8 @@ def api_save():
 
     s = load_settings()
     effort_type, effort_field_id = effort_cfg(s)
-    start_src, start_fid = date_field_cfg(s, "start_date")
-    end_src, end_fid = date_field_cfg(s, "end_date")
+    start_fid = date_field_cfg(s, "start_date")
+    end_fid = date_field_cfg(s, "end_date")
 
     try:
         base, session = get_jira_session()
@@ -244,8 +244,8 @@ def api_save():
 
         if "startDate" in item:
             try:
-                if start_src != "jira_field" or not start_fid:
-                    raise RuntimeError("Дата начала не настроена как поле Jira (fields.start_date)")
+                if not start_fid:
+                    raise RuntimeError("Не задан fields.start_date.jira_field_id")
                 update_issue_date(base, session, key, start_fid, item["startDate"])
                 saved += 1
             except Exception as e:
@@ -254,8 +254,8 @@ def api_save():
 
         if "endDate" in item:
             try:
-                if end_src != "jira_field" or not end_fid:
-                    raise RuntimeError("Дата окончания не настроена как поле Jira (fields.end_date)")
+                if not end_fid:
+                    raise RuntimeError("Не задан fields.end_date.jira_field_id")
                 update_issue_date(base, session, key, end_fid, item["endDate"])
                 saved += 1
             except Exception as e:

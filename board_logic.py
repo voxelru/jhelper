@@ -298,7 +298,7 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
         fields.append(sprint_fid)
 
     for name in ("start_date", "end_date"):
-        _, fid = date_field_cfg(settings, name)
+        fid = date_field_cfg(settings, name)
         if fid:
             fields.append(fid)
 
@@ -313,13 +313,11 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
 
 def fields_public_cfg(s: dict[str, Any]) -> dict[str, Any]:
     """Часть настроек полей, которую отдаём на фронтенд (для тултипа/подписей)."""
-    start_src, start_fid = date_field_cfg(s, "start_date")
-    end_src, end_fid = date_field_cfg(s, "end_date")
     return {
         "customer": {"jiraFieldId": customer_field_id(s)},
         "sprint": {"jiraFieldId": sprint_field_id(s)},
-        "startDate": {"source": start_src, "jiraFieldId": start_fid},
-        "endDate": {"source": end_src, "jiraFieldId": end_fid},
+        "startDate": {"jiraFieldId": date_field_cfg(s, "start_date")},
+        "endDate": {"jiraFieldId": date_field_cfg(s, "end_date")},
     }
 
 
@@ -329,8 +327,8 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
     order, colors = priorities_cfg(settings)
     cust_fid = customer_field_id(settings)
     sprint_fid = sprint_field_id(settings)
-    start_src, start_fid = date_field_cfg(settings, "start_date")
-    end_src, end_fid = date_field_cfg(settings, "end_date")
+    start_fid = date_field_cfg(settings, "start_date")
+    end_fid = date_field_cfg(settings, "end_date")
     planning_start, _planning_end = planning_bounds(settings)
 
     tasks: list[dict[str, Any]] = []
@@ -352,8 +350,8 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
         customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
         sprint = parse_sprint_value(fields.get(sprint_fid)) if sprint_fid else None
 
-        jira_start = parse_jira_date(fields.get(start_fid)) if start_src == "jira_field" and start_fid else None
-        jira_end = parse_jira_date(fields.get(end_fid)) if end_src == "jira_field" and end_fid else None
+        jira_start = parse_jira_date(fields.get(start_fid)) if start_fid else None
+        jira_end = parse_jira_date(fields.get(end_fid)) if end_fid else None
 
         # Задача «в приоритете» по срокам: если в Jira назначена дата начала (или
         # только окончания), задача встаёт на диаграмме на неё, а не в очередь.

@@ -50,16 +50,17 @@ def _field_cfg(s: dict[str, Any], name: str) -> dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
-def date_field_cfg(s: dict[str, Any], name: str) -> tuple[str, str | None]:
-    """Источник даты: fields.<name>.source (board|jira_field) / .jira_field_id."""
-    cfg = _field_cfg(s, name)
-    source = str(cfg.get("source") or "board").lower().strip()
-    if source not in ("board", "jira_field"):
-        source = "board"
-    fid = cfg.get("jira_field_id")
+def date_field_cfg(s: dict[str, Any], name: str) -> str | None:
+    """ID поля Jira для даты (начала/окончания): fields.<name>.jira_field_id.
+
+    Если задан — эта дата читается из Jira, задача встаёт на диаграмме на неё,
+    а перетаскивание/изменение ширины прямоугольника пишет новую дату обратно
+    в это поле. Если не задан — дата на диаграмме чисто расчётная (по позиции
+    задачи в очереди сотрудника) и никуда не сохраняется."""
+    fid = _field_cfg(s, name).get("jira_field_id")
     if fid is not None:
         fid = str(fid).strip() or None
-    return source, fid
+    return fid
 
 
 def customer_field_id(s: dict[str, Any]) -> str | None:
