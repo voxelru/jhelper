@@ -24,17 +24,21 @@ from jira_client import (
     get_jira_session,
     search_issues_jql,
     update_issue_assignee,
+    update_issue_date,
     update_issue_effort,
 )
 from pending_changes import (
     clear_pending,
     pending_list,
     read_pending,
+    reset_history,
+    undo_last,
     upsert_pending_assignee,
+    upsert_pending_dates,
     upsert_pending_effort,
     write_pending,
 )
-from settings import effort_cfg, horizon_cfg, load_settings, priorities_cfg
+from settings import date_field_cfg, effort_cfg, horizon_cfg, load_settings, priorities_cfg
 
 load_dotenv()
 
@@ -95,7 +99,7 @@ def api_board():
 
     tasks = normalize_issues(issues, s)
     pending = read_pending(ROOT)
-    tasks = apply_pending_changes(tasks, pending)
+    tasks = apply_pending_changes(tasks, pending, s)
     sprints = sorted({t["sprint"] for t in tasks if t.get("sprint")})
     board = build_rows(tasks, order)
     start, end = planning_bounds(s)
@@ -161,6 +165,42 @@ def api_pending_effort_post():
     return jsonify({"changes": pending_list(changes), "count": len(changes)})
 
 
+@app.route("/api/pending/dates", methods=["POST"])
+def api_pending_dates_post():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("key") or "").strip()
+    has_start = "startDate" in data
+    has_end = "endDate" in data
+    if not key or (not has_start and not has_end):
+        return jsonify({"error": "Нужны key и startDate и/или endDate"}), 400
+    try:
+        changes = upsert_pending_dates(
+            ROOT,
+            key,
+            has_start=has_start,
+            start_date=data.get("startDate"),
+            original_start_date=data.get("originalStartDate"),
+            has_end=has_end,
+            end_date=data.get("endDate"),
+            original_end_date=data.get("originalEndDate"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"changes": pending_list(changes), "count": len(changes)})
+
+
+@app.route("/api/pending/undo", methods=["POST"])
+def api_pending_undo():
+    changes = undo_last(ROOT)
+    return jsonify({"changes": pending_list(changes), "count": len(changes)})
+
+
+@app.route("/api/pending/clear", methods=["POST"])
+def api_pending_clear():
+    clear_pending(ROOT)
+    return jsonify({"changes": [], "count": 0})
+
+
 @app.route("/api/save", methods=["POST"])
 def api_save():
     changes = read_pending(ROOT)
@@ -169,6 +209,8 @@ def api_save():
 
     s = load_settings()
     effort_type, effort_field_id = effort_cfg(s)
+    start_src, start_fid = date_field_cfg(s, "start_date")
+    end_src, end_fid = date_field_cfg(s, "end_date")
 
     try:
         base, session = get_jira_session()
@@ -200,13 +242,34 @@ def api_save():
                 failed.append({"key": key, "field": "effort", "error": str(e)})
                 remaining_item["effortDays"] = item["effortDays"]
 
+        if "startDate" in item:
+            try:
+                if start_src != "jira_field" or not start_fid:
+                    raise RuntimeError("Дата начала не настроена как поле Jira (fields.start_date)")
+                update_issue_date(base, session, key, start_fid, item["startDate"])
+                saved += 1
+            except Exception as e:
+                failed.append({"key": key, "field": "startDate", "error": str(e)})
+                remaining_item["startDate"] = item["startDate"]
+
+        if "endDate" in item:
+            try:
+                if end_src != "jira_field" or not end_fid:
+                    raise RuntimeError("Дата окончания не настроена как поле Jira (fields.end_date)")
+                update_issue_date(base, session, key, end_fid, item["endDate"])
+                saved += 1
+            except Exception as e:
+                failed.append({"key": key, "field": "endDate", "error": str(e)})
+                remaining_item["endDate"] = item["endDate"]
+
         if remaining_item:
             remaining[key] = remaining_item
 
     if remaining:
         write_pending(ROOT, remaining)
     else:
-        clear_pending(ROOT)
+        write_pending(ROOT, {})
+    reset_history(ROOT)
 
     status = 200 if not failed else 207
     return (

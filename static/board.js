@@ -9,6 +9,8 @@
   const boardEl = document.getElementById("board");
   const statusEl = document.getElementById("status");
   const btnRefresh = document.getElementById("btn-refresh");
+  const btnUndo = document.getElementById("btn-undo");
+  const btnClear = document.getElementById("btn-clear");
   const btnSave = document.getElementById("btn-save");
   const sprintFilterEl = document.getElementById("sprint-filter");
 
@@ -41,14 +43,63 @@
     btnSave.textContent = has
       ? `Сохранить в Jira (${pendingCount})`
       : "Сохранить в Jira";
+    btnUndo.disabled = !has;
+    btnClear.disabled = !has;
   }
 
+  function priorityRank(name) {
+    const order = (settings && settings.priorities && settings.priorities.order) || [];
+    const idx = order.indexOf(name);
+    return idx === -1 ? order.length + 10 : idx;
+  }
+
+  function taskSortKey(t) {
+    return [priorityRank(t.priority), t.key || ""];
+  }
+
+  function compareSortKeys(a, b) {
+    if (a[0] !== b[0]) return a[0] - b[0];
+    return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+  }
+
+  /**
+   * Раскладывает задачи строки: с назначенным сроком (pinnedStartOffsetDays)
+   * встают фиксированно на эту позицию, остальные заполняют свободные
+   * промежутки подряд без зазоров, в порядке приоритета — как раньше.
+   */
   function packRow(tasks) {
-    let off = 0;
-    for (const t of tasks) {
-      t.startOffsetDays = Math.round(off * 10000) / 10000;
+    const pinned = tasks.filter((t) => t.pinnedStartOffsetDays != null);
+    const free = tasks.filter((t) => t.pinnedStartOffsetDays == null);
+    pinned.sort((a, b) => {
+      if (a.pinnedStartOffsetDays !== b.pinnedStartOffsetDays) {
+        return a.pinnedStartOffsetDays - b.pinnedStartOffsetDays;
+      }
+      return compareSortKeys(taskSortKey(a), taskSortKey(b));
+    });
+    free.sort((a, b) => compareSortKeys(taskSortKey(a), taskSortKey(b)));
+
+    const occupied = [];
+    let cursor = 0;
+    for (const t of pinned) {
       t.durationDays = t.effortDays;
-      off += t.durationDays;
+      const start = Math.max(t.pinnedStartOffsetDays, cursor);
+      t.startOffsetDays = Math.round(start * 10000) / 10000;
+      const end = start + t.durationDays;
+      occupied.push([start, end]);
+      cursor = end;
+    }
+
+    for (const t of free) {
+      t.durationDays = t.effortDays;
+      let start = 0;
+      for (;;) {
+        const blocker = occupied.find(([s, e]) => s < start + t.durationDays && e > start);
+        if (!blocker) break;
+        start = blocker[1];
+      }
+      t.startOffsetDays = Math.round(start * 10000) / 10000;
+      occupied.push([start, start + t.durationDays]);
+      occupied.sort((a, b) => a[0] - b[0]);
     }
   }
 
@@ -86,29 +137,19 @@
     }
   }
 
-  function insertTaskAtIndex(row, task, index) {
-    removeTaskFromAllRows(task);
-    let i = Math.max(0, Math.min(index, row.tasks.length));
-    row.tasks.splice(i, 0, task);
-    task.assigneeId = row.assigneeId;
-    task.assigneeName = row.assigneeName;
-    const original = task.originalAssigneeId;
-    task.pendingAssignee = original != null && String(original) !== String(row.assigneeId);
-    packRow(row.tasks);
-  }
-
-  function indexFromClientX(rowEl, clientX, tasks) {
+  function offsetDaysFromClientX(rowEl, clientX) {
     const track = rowEl.querySelector(".row-track");
     const rect = track.getBoundingClientRect();
-    const x = clientX - rect.left;
-    const dayFloat = x / ppd;
-    let acc = 0;
-    for (let i = 0; i < tasks.length; i++) {
-      const mid = acc + tasks[i].durationDays / 2;
-      if (dayFloat < mid) return i;
-      acc += tasks[i].durationDays;
-    }
-    return tasks.length;
+    const raw = (clientX - rect.left) / ppd;
+    const maxOffset = Math.max(0, (settings.workingDayCount || 1) - 1);
+    return Math.min(maxOffset, Math.max(0, Math.round(raw)));
+  }
+
+  function computeDatesForOffset(task, offsetDays) {
+    return {
+      startIso: boardDateAtOffset(offsetDays, false),
+      endIso: boardDateAtOffset(offsetDays + task.durationDays, true),
+    };
   }
 
   function formatDateRu(iso) {
@@ -182,6 +223,7 @@
     const pendingParts = [];
     if (task.pendingAssignee) pendingParts.push("исполнитель");
     if (task.pendingEffort) pendingParts.push("трудозатраты");
+    if (task.pendingDates) pendingParts.push("даты");
     const pendingRow = pendingParts.length
       ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">${escapeHtml(pendingParts.join(", "))} не сохранены в Jira</span></div>`
       : "";
@@ -220,6 +262,15 @@
     });
     el.addEventListener("mouseleave", () => {
       hideTooltip();
+    });
+  }
+
+  function wireTaskOpenInJira(el, task) {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".task-resize") || e.target.closest("a.task-key")) return;
+      const base = ((settings && settings.jiraBaseUrl) || "").replace(/\/$/, "");
+      if (!base) return;
+      window.open(`${base}/browse/${encodeURIComponent(task.key)}`, "_blank", "noopener,noreferrer");
     });
   }
 
@@ -329,7 +380,7 @@
         const isResizing = !!(resizeState && resizeState.task === t);
         el.className =
           "task" +
-          (t.pendingAssignee || t.pendingEffort ? " pending" : "") +
+          (t.pendingAssignee || t.pendingEffort || t.pendingDates ? " pending" : "") +
           (isResizing ? " resizing" : "");
         el.draggable = true;
         el.dataset.issueKey = t.key;
@@ -359,6 +410,7 @@
 
         wireTaskTooltip(el, t);
         wireTaskResize(resizeEl, t, row);
+        wireTaskOpenInJira(el, t);
         track.appendChild(el);
       }
 
@@ -416,6 +468,43 @@
     return data;
   }
 
+  function dateFieldWritable(name) {
+    const fields = (settings && settings.fields) || {};
+    const cfg = fields[name];
+    return !!(cfg && cfg.source === "jira_field" && cfg.jiraFieldId);
+  }
+
+  async function recordPendingDates(task, startIso, endIso) {
+    const startWritable = dateFieldWritable("startDate");
+    const endWritable = dateFieldWritable("endDate");
+    if (!startWritable && !endWritable) return null;
+
+    const payload = { key: task.key };
+    if (startWritable) {
+      payload.startDate = startIso;
+      payload.originalStartDate = task.originalJiraStartDate || null;
+    }
+    if (endWritable) {
+      payload.endDate = endIso;
+      payload.originalEndDate = task.originalJiraEndDate || null;
+    }
+
+    const r = await fetch("/api/pending/dates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    task.pendingDates =
+      (startWritable && startIso !== task.originalJiraStartDate) ||
+      (endWritable && endIso !== task.originalJiraEndDate);
+    pendingCount = data.count || 0;
+    updateSaveButton();
+    render();
+    return data;
+  }
+
   function wireRowDragDrop(rowEl, trackEl, row) {
     trackEl.addEventListener("dragstart", (e) => {
       if (e.target.closest("a.task-key")) {
@@ -457,29 +546,52 @@
       if (!dragState) return;
       const { task: draggedTask, sourceRow } = dragState;
       const prevAssigneeId = draggedTask.assigneeId;
+      const prevPinned = draggedTask.pinnedStartOffsetDays;
 
       const targetRow = row;
-      const idx = indexFromClientX(rowEl, e.clientX, targetRow.tasks);
+      const dropOffset = offsetDaysFromClientX(rowEl, e.clientX);
 
-      insertTaskAtIndex(targetRow, draggedTask, idx);
-      if (sourceRow !== targetRow) {
-        packRow(sourceRow.tasks);
-      }
+      removeTaskFromAllRows(draggedTask);
+      targetRow.tasks.push(draggedTask);
+      draggedTask.assigneeId = targetRow.assigneeId;
+      draggedTask.assigneeName = targetRow.assigneeName;
+      const originalAssignee = draggedTask.originalAssigneeId;
+      draggedTask.pendingAssignee =
+        originalAssignee != null && String(originalAssignee) !== String(targetRow.assigneeId);
+
+      const { startIso, endIso } = computeDatesForOffset(draggedTask, dropOffset);
+      draggedTask.pinnedStartOffsetDays = dropOffset;
+      if (dateFieldWritable("startDate")) draggedTask.jiraStartDate = startIso;
+      if (dateFieldWritable("endDate")) draggedTask.jiraEndDate = endIso;
+
+      packRow(targetRow.tasks);
+      if (sourceRow !== targetRow) packRow(sourceRow.tasks);
       render();
 
       const assigneeChanged = String(prevAssigneeId) !== String(targetRow.assigneeId);
-      if (assigneeChanged) {
-        recordPendingAssignee(draggedTask)
-          .then(() => {
-            const msg = pendingCount
-              ? `Смена исполнителя накоплена в файл (${pendingCount}). Нажмите «Сохранить в Jira».`
-              : "Исполнитель возвращён к значению из Jira; запись из файла удалена.";
-            setStatus(msg);
-          })
-          .catch((err) => setStatus(String(err.message || err), true));
-      } else {
-        setStatus("Порядок изменён только в интерфейсе (в Jira не записывается).");
+      const datesChanged = prevPinned !== dropOffset;
+
+      const persistPromises = [];
+      if (assigneeChanged) persistPromises.push(recordPendingAssignee(draggedTask).then(() => true));
+      if (datesChanged) persistPromises.push(recordPendingDates(draggedTask, startIso, endIso).then((d) => d !== null));
+
+      if (!persistPromises.length) {
+        setStatus("Положение не изменилось.");
+        return;
       }
+      Promise.all(persistPromises)
+        .then((results) => {
+          if (!results.some(Boolean)) {
+            setStatus("Положение изменено только в интерфейсе (даты в Jira не настроены для записи).");
+            return;
+          }
+          setStatus(
+            pendingCount
+              ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`
+              : "Изменения возвращены к значениям из Jira; записи удалены."
+          );
+        })
+        .catch((err) => setStatus(String(err.message || err), true));
     });
   }
 
@@ -550,8 +662,41 @@
     }
   }
 
+  async function undoLastPending() {
+    const r = await fetch("/api/pending/undo", { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+
+  async function clearAllPending() {
+    const r = await fetch("/api/pending/clear", { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    return data;
+  }
+
   btnRefresh.addEventListener("click", () => {
     loadBoard().catch((e) => setStatus(String(e.message || e), true));
+  });
+
+  btnUndo.addEventListener("click", () => {
+    undoLastPending()
+      .then(() => {
+        setStatus("Последнее действие отменено.");
+        return loadBoard();
+      })
+      .catch((e) => setStatus(String(e.message || e), true));
+  });
+
+  btnClear.addEventListener("click", () => {
+    if (pendingCount > 0 && !window.confirm("Отменить все несохранённые изменения?")) return;
+    clearAllPending()
+      .then(() => {
+        setStatus("Все несохранённые изменения отменены.");
+        return loadBoard();
+      })
+      .catch((e) => setStatus(String(e.message || e), true));
   });
 
   btnSave.addEventListener("click", () => {

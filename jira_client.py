@@ -111,6 +111,29 @@ def update_issue_assignee(
     raise RuntimeError(f"Не удалось назначить исполнителя для {issue_key}: {detail}")
 
 
+def update_issue_date(
+    base_url: str,
+    session: requests.Session,
+    issue_key: str,
+    field_id: str,
+    iso_date: str,
+) -> None:
+    """Записывает дату (начала/окончания) в поле Jira, формат YYYY-MM-DD."""
+    payload = {"fields": {field_id: iso_date}}
+    issue_url = f"{base_url}/rest/api/2/issue/{issue_key}"
+    r = session.put(issue_url, json=payload, timeout=60)
+    if r.status_code in (200, 204):
+        return
+    if r.status_code == 404:
+        r3 = session.put(f"{base_url}/rest/api/3/issue/{issue_key}", json=payload, timeout=60)
+        if r3.status_code in (200, 204):
+            return
+        raise RuntimeError(f"Не удалось сохранить дату для {issue_key}: {r3.status_code}: {r3.text[:300]}")
+    if r.status_code == 400:
+        raise RuntimeError(f"Не удалось сохранить дату для {issue_key}: {r.status_code}: {r.text[:300]}")
+    r.raise_for_status()
+
+
 def update_issue_effort(
     base_url: str,
     session: requests.Session,

@@ -199,6 +199,22 @@ def effort_days_to_jira_raw(days: float, effort_type: str, settings: dict[str, A
     raise ValueError(f"Сохранение трудозатрат не поддерживается для типа {effort_type}")
 
 
+def compute_pinned_offset(
+    planning_start: date,
+    jira_start: str | None,
+    jira_end: str | None,
+    effort_days: float,
+) -> float | None:
+    """Смещение (в рабочих днях от planning_start), на которое «прибита» задача,
+    если у неё назначена дата начала (или хотя бы окончания) в Jira."""
+    if jira_start:
+        return max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
+    if jira_end:
+        end_offset = working_days_between(planning_start, date.fromisoformat(jira_end)) + 1
+        return max(0.0, float(end_offset) - effort_days)
+    return None
+
+
 def parse_sprint_value(raw: Any) -> str | None:
     """Достаёт имя (текущего/последнего) спринта из поля Jira Sprint.
 
@@ -341,12 +357,7 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
 
         # Задача «в приоритете» по срокам: если в Jira назначена дата начала (или
         # только окончания), задача встаёт на диаграмме на неё, а не в очередь.
-        pinned_offset: float | None = None
-        if jira_start:
-            pinned_offset = max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
-        elif jira_end:
-            end_offset = working_days_between(planning_start, date.fromisoformat(jira_end)) + 1
-            pinned_offset = max(0.0, float(end_offset) - effort_days)
+        pinned_offset = compute_pinned_offset(planning_start, jira_start, jira_end, effort_days)
 
         missing_fields: list[str] = []
         if start_fid and not parse_jira_date(fields.get(start_fid)):
@@ -372,9 +383,12 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "pendingEffort": False,
                 "effortDays": round(effort_days, 4),
                 "originalEffortDays": round(effort_days, 4),
+                "pendingDates": False,
                 "color": color,
                 "jiraStartDate": jira_start,
                 "jiraEndDate": jira_end,
+                "originalJiraStartDate": jira_start,
+                "originalJiraEndDate": jira_end,
                 "pinnedStartOffsetDays": round(pinned_offset, 4) if pinned_offset is not None else None,
                 "missingFields": missing_fields,
                 "_rank": priority_rank(priority_name, order),
@@ -454,8 +468,10 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
 def apply_pending_changes(
     tasks: list[dict[str, Any]],
     pending: dict[str, dict[str, Any]],
+    settings: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Накладывает локальные несохранённые изменения (исполнитель, трудозатраты) на задачи."""
+    """Накладывает локальные несохранённые изменения (исполнитель, трудозатраты, даты) на задачи."""
+    planning_start, _ = planning_bounds(settings)
     for t in tasks:
         key = t.get("key")
         item = pending.get(key) if (pending and key) else None
@@ -472,4 +488,15 @@ def apply_pending_changes(
             t["pendingEffort"] = True
         else:
             t["pendingEffort"] = False
+
+        has_dates = bool(item and ("startDate" in item or "endDate" in item))
+        if has_dates:
+            if "startDate" in item:
+                t["jiraStartDate"] = item["startDate"]
+            if "endDate" in item:
+                t["jiraEndDate"] = item["endDate"]
+            t["pinnedStartOffsetDays"] = compute_pinned_offset(
+                planning_start, t.get("jiraStartDate"), t.get("jiraEndDate"), float(t["effortDays"])
+            )
+        t["pendingDates"] = has_dates
     return tasks
