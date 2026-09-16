@@ -101,6 +101,7 @@ def api_board():
     pending = read_pending(ROOT)
     tasks = apply_pending_changes(tasks, pending, s)
     sprints = sorted({t["sprint"] for t in tasks if t.get("sprint")})
+    customers = sorted({t["customer"] for t in tasks if t.get("customer")})
     board = build_rows(tasks, order)
     start, end = planning_bounds(s)
     board["meta"] = {
@@ -112,6 +113,7 @@ def api_board():
         "jiraBaseUrl": jira_base_url(),
         "pendingCount": len(pending),
         "sprints": sprints,
+        "customers": customers,
     }
     return jsonify(board)
 

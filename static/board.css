@@ -38,13 +38,25 @@ body {
   margin-left: 0.5rem;
 }
 
-#sprint-filter {
+#sprint-filter,
+#customer-filter {
   padding: 0.35rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #fff;
   font-size: 0.85rem;
   color: #263238;
+}
+
+#search-input {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.85rem;
+  color: #263238;
+  width: 220px;
+  max-width: 40vw;
 }
 
 #btn-refresh,

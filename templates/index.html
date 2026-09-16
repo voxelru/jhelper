@@ -13,6 +13,11 @@
     <select id="sprint-filter">
       <option value="">Все спринты</option>
     </select>
+    <label class="sprint-filter-label" for="customer-filter">Бизнес-партнёр:</label>
+    <select id="customer-filter">
+      <option value="">Все бизнес-партнёры</option>
+    </select>
+    <input type="search" id="search-input" placeholder="Поиск по номеру или заголовку…" aria-label="Поиск по номеру или заголовку задачи" />
     <button type="button" id="btn-refresh">Обновить из Jira</button>
     <button type="button" id="btn-undo" class="icon-btn" disabled title="Отменить последнее действие" aria-label="Отменить последнее действие">↩</button>
     <button type="button" id="btn-clear" class="icon-btn" disabled title="Отменить все несохранённые изменения" aria-label="Отменить все несохранённые изменения">✕</button>

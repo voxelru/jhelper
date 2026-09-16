@@ -13,6 +13,8 @@
   const btnClear = document.getElementById("btn-clear");
   const btnSave = document.getElementById("btn-save");
   const sprintFilterEl = document.getElementById("sprint-filter");
+  const customerFilterEl = document.getElementById("customer-filter");
+  const searchInputEl = document.getElementById("search-input");
 
   let settings = null;
   /** @type {{ rows: any[], meta: any } | null} */
@@ -20,6 +22,8 @@
   let ppd = 36;
   let pendingCount = 0;
   let selectedSprint = "";
+  let selectedCustomer = "";
+  let searchQuery = "";
 
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
@@ -108,18 +112,42 @@
     }
   }
 
-  function populateSprintFilter() {
-    const sprints = (model && model.meta && model.meta.sprints) || [];
-    const prev = selectedSprint;
-    sprintFilterEl.innerHTML = '<option value="">Все спринты</option>';
-    for (const name of sprints) {
+  function populateFilterSelect(selectEl, values, currentValue, allLabel) {
+    selectEl.innerHTML = "";
+    const allOpt = document.createElement("option");
+    allOpt.value = "";
+    allOpt.textContent = allLabel;
+    selectEl.appendChild(allOpt);
+    for (const name of values) {
       const opt = document.createElement("option");
       opt.value = name;
       opt.textContent = name;
-      sprintFilterEl.appendChild(opt);
+      selectEl.appendChild(opt);
     }
-    selectedSprint = sprints.includes(prev) ? prev : "";
-    sprintFilterEl.value = selectedSprint;
+    const next = values.includes(currentValue) ? currentValue : "";
+    selectEl.value = next;
+    return next;
+  }
+
+  function populateSprintFilter() {
+    const sprints = (model && model.meta && model.meta.sprints) || [];
+    selectedSprint = populateFilterSelect(sprintFilterEl, sprints, selectedSprint, "Все спринты");
+  }
+
+  function populateCustomerFilter() {
+    const customers = (model && model.meta && model.meta.customers) || [];
+    selectedCustomer = populateFilterSelect(customerFilterEl, customers, selectedCustomer, "Все бизнес-партнёры");
+  }
+
+  function taskMatchesFilters(t) {
+    if (selectedSprint && t.sprint !== selectedSprint) return false;
+    if (selectedCustomer && t.customer !== selectedCustomer) return false;
+    if (searchQuery) {
+      const key = (t.key || "").toLowerCase();
+      const summary = (t.summary || "").toLowerCase();
+      if (!key.includes(searchQuery) && !summary.includes(searchQuery)) return false;
+    }
+    return true;
   }
 
   function removeTaskFromAllRows(task) {
@@ -280,12 +308,13 @@
         let next = Math.round((startDuration + deltaDays) * 4) / 4;
         next = Math.max(minDays, next);
         if (next !== task.durationDays) {
+          // Трудозатраты обновляем всегда — растягивание задаёт новую
+          // длительность независимо от того, есть ли у задачи точные даты.
+          task.effortDays = next;
           if (wasComplete) {
             // Задача уже занимает строго свой диапазон дат — растягивание
-            // двигает дату окончания, начало остаётся на месте.
+            // ещё и двигает дату окончания, начало остаётся на месте.
             task.dateRangeDurationDays = next;
-          } else {
-            task.effortDays = next;
           }
           packRow(row.tasks);
           render();
@@ -297,17 +326,15 @@
         document.removeEventListener("mouseup", onUp);
         resizeState = null;
 
-        let promise;
+        const pending = [recordPendingEffort(task)];
         if (wasComplete) {
           const { startIso, endIso } = computeDatesForOffset(task, task.startOffsetDays);
           if (dateFieldWritable("startDate")) task.jiraStartDate = startIso;
           if (dateFieldWritable("endDate")) task.jiraEndDate = endIso;
-          promise = recordPendingDates(task, startIso, endIso);
-        } else {
-          promise = recordPendingEffort(task);
+          pending.push(recordPendingDates(task, startIso, endIso));
         }
 
-        promise
+        Promise.all(pending)
           .then(() => {
             setStatus(
               pendingCount
@@ -363,9 +390,7 @@
     inner.appendChild(header);
 
     for (const row of model.rows) {
-      const visibleTasks = selectedSprint
-        ? row.tasks.filter((t) => t.sprint === selectedSprint)
-        : row.tasks;
+      const visibleTasks = row.tasks.filter(taskMatchesFilters);
       if (!visibleTasks.length) continue;
 
       const rowEl = document.createElement("div");
@@ -633,6 +658,7 @@
     pendingCount = (data.meta && data.meta.pendingCount) || 0;
     updateSaveButton();
     populateSprintFilter();
+    populateCustomerFilter();
     rebuildAllPacks();
     render();
     const base = `Задач: ${countTasks(model)}`;
@@ -716,6 +742,16 @@
 
   sprintFilterEl.addEventListener("change", () => {
     selectedSprint = sprintFilterEl.value;
+    render();
+  });
+
+  customerFilterEl.addEventListener("change", () => {
+    selectedCustomer = customerFilterEl.value;
+    render();
+  });
+
+  searchInputEl.addEventListener("input", () => {
+    searchQuery = searchInputEl.value.trim().toLowerCase();
     render();
   });
 
