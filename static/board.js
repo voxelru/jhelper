@@ -63,43 +63,36 @@
   }
 
   /**
-   * Раскладывает задачи строки: с назначенным сроком (pinnedStartOffsetDays)
-   * встают фиксированно на эту позицию, остальные заполняют свободные
-   * промежутки подряд без зазоров, в порядке приоритета — как раньше.
+   * Раскладывает задачи строки без автоматического заполнения промежутков:
+   * полностью заполненные задачи (isComplete — есть дата начала, окончания
+   * и трудозатраты) встают строго на свой диапазон дат. Остальные — в
+   * очередь после самой поздней из них, подряд без зазоров, в порядке
+   * приоритета. Между полностью заполненными задачами намеренно остаются
+   * пустые промежутки, куда можно вручную перетащить любую задачу.
    */
   function packRow(tasks) {
-    const pinned = tasks.filter((t) => t.pinnedStartOffsetDays != null);
-    const free = tasks.filter((t) => t.pinnedStartOffsetDays == null);
-    pinned.sort((a, b) => {
-      if (a.pinnedStartOffsetDays !== b.pinnedStartOffsetDays) {
-        return a.pinnedStartOffsetDays - b.pinnedStartOffsetDays;
+    const complete = tasks.filter((t) => t.isComplete);
+    const incomplete = tasks.filter((t) => !t.isComplete);
+    complete.sort((a, b) => {
+      if (a.dateRangeStartOffsetDays !== b.dateRangeStartOffsetDays) {
+        return a.dateRangeStartOffsetDays - b.dateRangeStartOffsetDays;
       }
       return compareSortKeys(taskSortKey(a), taskSortKey(b));
     });
-    free.sort((a, b) => compareSortKeys(taskSortKey(a), taskSortKey(b)));
+    incomplete.sort((a, b) => compareSortKeys(taskSortKey(a), taskSortKey(b)));
 
-    const occupied = [];
     let cursor = 0;
-    for (const t of pinned) {
-      t.durationDays = t.effortDays;
-      const start = Math.max(t.pinnedStartOffsetDays, cursor);
+    for (const t of complete) {
+      t.durationDays = t.dateRangeDurationDays;
+      const start = Math.max(t.dateRangeStartOffsetDays, cursor);
       t.startOffsetDays = Math.round(start * 10000) / 10000;
-      const end = start + t.durationDays;
-      occupied.push([start, end]);
-      cursor = end;
+      cursor = start + t.durationDays;
     }
 
-    for (const t of free) {
+    for (const t of incomplete) {
       t.durationDays = t.effortDays;
-      let start = 0;
-      for (;;) {
-        const blocker = occupied.find(([s, e]) => s < start + t.durationDays && e > start);
-        if (!blocker) break;
-        start = blocker[1];
-      }
-      t.startOffsetDays = Math.round(start * 10000) / 10000;
-      occupied.push([start, start + t.durationDays]);
-      occupied.sort((a, b) => a[0] - b[0]);
+      t.startOffsetDays = Math.round(cursor * 10000) / 10000;
+      cursor += t.durationDays;
     }
   }
 
@@ -171,24 +164,6 @@
     }
     idx = Math.max(0, Math.min(dates.length - 1, idx));
     return dates[idx];
-  }
-
-  function workingDateIndex(iso) {
-    const dates = (settings && settings.workingDates) || [];
-    const idx = dates.indexOf(iso);
-    return idx === -1 ? null : idx;
-  }
-
-  /**
-   * Для задачи, «прибитой» только по дате окончания (jiraEndDate есть,
-   * jiraStartDate нет), пересчитывает startOffsetDays под новую длительность
-   * так, чтобы дата окончания оставалась на месте.
-   */
-  function repinByEndDateIfNeeded(task) {
-    if (task.jiraStartDate || !task.jiraEndDate) return;
-    const endIdx = workingDateIndex(task.jiraEndDate);
-    if (endIdx == null) return;
-    task.pinnedStartOffsetDays = Math.max(0, endIdx + 1 - task.durationDays);
   }
 
   function resolveTaskDates(t) {
@@ -297,6 +272,7 @@
       const startX = e.clientX;
       const startDuration = task.durationDays;
       const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
+      const wasComplete = task.isComplete;
       resizeState = { task, row };
 
       const onMove = (ev) => {
@@ -304,9 +280,13 @@
         let next = Math.round((startDuration + deltaDays) * 4) / 4;
         next = Math.max(minDays, next);
         if (next !== task.durationDays) {
-          task.durationDays = next;
-          task.effortDays = next;
-          repinByEndDateIfNeeded(task);
+          if (wasComplete) {
+            // Задача уже занимает строго свой диапазон дат — растягивание
+            // двигает дату окончания, начало остаётся на месте.
+            task.dateRangeDurationDays = next;
+          } else {
+            task.effortDays = next;
+          }
           packRow(row.tasks);
           render();
         }
@@ -317,21 +297,17 @@
         document.removeEventListener("mouseup", onUp);
         resizeState = null;
 
-        const pending = [recordPendingEffort(task)];
-
-        // Изменение ширины меняет длительность, а значит и дату окончания
-        // (и, для задач, «прибитых» по дате окончания, дату начала) — но
-        // только для задач с уже закреплённым положением (перетаскиванием
-        // или назначенной в Jira датой). У свободных задач положение —
-        // расчётное и не должно само по себе становиться датой в Jira.
-        if (task.pinnedStartOffsetDays != null) {
+        let promise;
+        if (wasComplete) {
           const { startIso, endIso } = computeDatesForOffset(task, task.startOffsetDays);
           if (dateFieldWritable("startDate")) task.jiraStartDate = startIso;
           if (dateFieldWritable("endDate")) task.jiraEndDate = endIso;
-          pending.push(recordPendingDates(task, startIso, endIso));
+          promise = recordPendingDates(task, startIso, endIso);
+        } else {
+          promise = recordPendingEffort(task);
         }
 
-        Promise.all(pending)
+        promise
           .then(() => {
             setStatus(
               pendingCount
@@ -576,7 +552,7 @@
       if (!dragState) return;
       const { task: draggedTask, sourceRow } = dragState;
       const prevAssigneeId = draggedTask.assigneeId;
-      const prevPinned = draggedTask.pinnedStartOffsetDays;
+      const prevStart = draggedTask.isComplete ? draggedTask.dateRangeStartOffsetDays : null;
 
       const targetRow = row;
       const dropOffset = offsetDaysFromClientX(rowEl, e.clientX);
@@ -589,8 +565,13 @@
       draggedTask.pendingAssignee =
         originalAssignee != null && String(originalAssignee) !== String(targetRow.assigneeId);
 
+      // Перетаскивание — явное указание позиции: задача занимает диапазон от
+      // dropOffset и на текущую ширину вперёд, как будто в Jira назначены
+      // обе даты, и перестаёт зависеть от расчётной очереди.
       const { startIso, endIso } = computeDatesForOffset(draggedTask, dropOffset);
-      draggedTask.pinnedStartOffsetDays = dropOffset;
+      draggedTask.isComplete = true;
+      draggedTask.dateRangeStartOffsetDays = dropOffset;
+      draggedTask.dateRangeDurationDays = draggedTask.durationDays;
       if (dateFieldWritable("startDate")) draggedTask.jiraStartDate = startIso;
       if (dateFieldWritable("endDate")) draggedTask.jiraEndDate = endIso;
 
@@ -599,7 +580,7 @@
       render();
 
       const assigneeChanged = String(prevAssigneeId) !== String(targetRow.assigneeId);
-      const datesChanged = prevPinned !== dropOffset;
+      const datesChanged = prevStart !== dropOffset;
 
       const persistPromises = [];
       if (assigneeChanged) persistPromises.push(recordPendingAssignee(draggedTask).then(() => true));

@@ -199,20 +199,19 @@ def effort_days_to_jira_raw(days: float, effort_type: str, settings: dict[str, A
     raise ValueError(f"Сохранение трудозатрат не поддерживается для типа {effort_type}")
 
 
-def compute_pinned_offset(
+def compute_date_range(
     planning_start: date,
     jira_start: str | None,
     jira_end: str | None,
-    effort_days: float,
-) -> float | None:
-    """Смещение (в рабочих днях от planning_start), на которое «прибита» задача,
-    если у неё назначена дата начала (или хотя бы окончания) в Jira."""
-    if jira_start:
-        return max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
-    if jira_end:
-        end_offset = working_days_between(planning_start, date.fromisoformat(jira_end)) + 1
-        return max(0.0, float(end_offset) - effort_days)
-    return None
+) -> tuple[float, float] | None:
+    """(startOffsetDays, durationDays) — точный диапазон по датам начала/окончания
+    в Jira (в рабочих днях от planning_start), или None, если задана не обе даты."""
+    if not jira_start or not jira_end:
+        return None
+    start_offset = max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
+    end_offset_excl = float(working_days_between(planning_start, date.fromisoformat(jira_end)) + 1)
+    duration = max(0.25, end_offset_excl - start_offset)
+    return start_offset, duration
 
 
 def parse_sprint_value(raw: Any) -> str | None:
@@ -346,6 +345,7 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
             continue
 
         effort_days = effort_days_for_issue(fields, effort_type, effort_field_id, settings)
+        has_effort = has_jira_effort(fields, effort_type, effort_field_id)
         color = colors.get(priority_name) or colors.get("default") or "#78909c"
         customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
         sprint = parse_sprint_value(fields.get(sprint_fid)) if sprint_fid else None
@@ -353,16 +353,19 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
         jira_start = parse_jira_date(fields.get(start_fid)) if start_fid else None
         jira_end = parse_jira_date(fields.get(end_fid)) if end_fid else None
 
-        # Задача «в приоритете» по срокам: если в Jira назначена дата начала (или
-        # только окончания), задача встаёт на диаграмме на неё, а не в очередь.
-        pinned_offset = compute_pinned_offset(planning_start, jira_start, jira_end, effort_days)
+        # Задача «полностью заполнена» (дата начала + дата окончания + трудозатраты
+        # заданы в Jira) — занимает на диаграмме строго свой диапазон дат.
+        # Иначе — уходит в конец очереди сотрудника и заполняет свободные дни
+        # по трудозатратам (старая последовательная раскладка).
+        is_complete = bool(jira_start) and bool(jira_end) and has_effort
+        date_range = compute_date_range(planning_start, jira_start, jira_end) if is_complete else None
 
         missing_fields: list[str] = []
-        if start_fid and not parse_jira_date(fields.get(start_fid)):
+        if start_fid and not jira_start:
             missing_fields.append("дата начала")
-        if end_fid and not parse_jira_date(fields.get(end_fid)):
+        if end_fid and not jira_end:
             missing_fields.append("дата окончания")
-        if not has_jira_effort(fields, effort_type, effort_field_id):
+        if not has_effort:
             missing_fields.append("трудозатраты")
 
         tasks.append(
@@ -381,13 +384,16 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "pendingEffort": False,
                 "effortDays": round(effort_days, 4),
                 "originalEffortDays": round(effort_days, 4),
+                "hasEffort": has_effort,
                 "pendingDates": False,
                 "color": color,
                 "jiraStartDate": jira_start,
                 "jiraEndDate": jira_end,
                 "originalJiraStartDate": jira_start,
                 "originalJiraEndDate": jira_end,
-                "pinnedStartOffsetDays": round(pinned_offset, 4) if pinned_offset is not None else None,
+                "isComplete": is_complete,
+                "dateRangeStartOffsetDays": round(date_range[0], 4) if date_range else None,
+                "dateRangeDurationDays": round(date_range[1], 4) if date_range else None,
                 "missingFields": missing_fields,
                 "_rank": priority_rank(priority_name, order),
             }
@@ -399,17 +405,16 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
     return tasks
 
 
-def _without_pinned_marker(item: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in item.items() if k != "pinnedStartOffsetDays"}
-
-
 def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
     """Группирует задачи по исполнителю и раскладывает их на диаграмме.
 
-    Задачи с назначенным сроком (pinnedStartOffsetDays задан в normalize_issues,
-    когда в Jira указана дата начала/окончания) встают на диаграмме фиксированно
-    на эту позицию. Остальные задачи заполняют свободные промежутки между ними
-    подряд без зазоров, в порядке приоритета — как раньше.
+    Без автоматической расстановки по свободным промежуткам: полностью
+    заполненные задачи (isComplete — есть дата начала, окончания и
+    трудозатраты) встают строго на свой диапазон дат. Остальные задачи —
+    в очередь после самой поздней из них, подряд без зазоров, в порядке
+    приоритета, как в самой первой версии доски. Так между полностью
+    заполненными задачами намеренно остаются пустые промежутки, куда
+    можно вручную перетащить любую задачу.
     """
     by_assignee: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
@@ -425,38 +430,26 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     for aid, group_raw in by_assignee.items():
-        group = sorted(group_raw, key=sort_key)
-        display_name = (group[0].get("assigneeName") if group else None) or aid
+        display_name = (group_raw[0].get("assigneeName") if group_raw else None) or aid
 
-        pinned_raw = [t for t in group if t.get("pinnedStartOffsetDays") is not None]
-        free = [t for t in group if t.get("pinnedStartOffsetDays") is None]
+        complete = [t for t in group_raw if t.get("isComplete")]
+        incomplete = sorted((t for t in group_raw if not t.get("isComplete")), key=sort_key)
 
-        pinned_raw.sort(key=lambda t: (float(t["pinnedStartOffsetDays"]), *sort_key(t)))
+        complete.sort(key=lambda t: (float(t["dateRangeStartOffsetDays"]), *sort_key(t)))
 
         placed: list[dict[str, Any]] = []
-        occupied: list[tuple[float, float]] = []
         cursor = 0.0
-        for item in pinned_raw:
-            effort = float(item["effortDays"])
-            start = max(float(item["pinnedStartOffsetDays"]), cursor)
-            placed.append({**_without_pinned_marker(item), "startOffsetDays": round(start, 4), "durationDays": effort})
-            end = start + effort
-            occupied.append((start, end))
-            cursor = end
+        for item in complete:
+            duration = float(item["dateRangeDurationDays"])
+            start = max(float(item["dateRangeStartOffsetDays"]), cursor)
+            placed.append({**item, "startOffsetDays": round(start, 4), "durationDays": round(duration, 4)})
+            cursor = start + duration
 
-        for item in free:
-            effort = float(item["effortDays"])
-            start = 0.0
-            while True:
-                blocker = next((o for o in occupied if o[0] < start + effort and o[1] > start), None)
-                if blocker is None:
-                    break
-                start = blocker[1]
-            placed.append({**_without_pinned_marker(item), "startOffsetDays": round(start, 4), "durationDays": effort})
-            occupied.append((start, start + effort))
-            occupied.sort(key=lambda o: o[0])
+        for item in incomplete:
+            duration = float(item["effortDays"])
+            placed.append({**item, "startOffsetDays": round(cursor, 4), "durationDays": round(duration, 4)})
+            cursor += duration
 
-        placed.sort(key=lambda t: (t["startOffsetDays"], *sort_key(t)))
         rows.append({"assigneeId": aid, "assigneeName": display_name, "tasks": placed})
 
     rows.sort(key=lambda r: (r.get("assigneeName") or "").casefold())
@@ -481,7 +474,8 @@ def apply_pending_changes(
         else:
             t["pendingAssignee"] = False
 
-        if item and "effortDays" in item:
+        has_effort_override = bool(item and "effortDays" in item)
+        if has_effort_override:
             t["effortDays"] = float(item["effortDays"])
             t["pendingEffort"] = True
         else:
@@ -493,8 +487,18 @@ def apply_pending_changes(
                 t["jiraStartDate"] = item["startDate"]
             if "endDate" in item:
                 t["jiraEndDate"] = item["endDate"]
-            t["pinnedStartOffsetDays"] = compute_pinned_offset(
-                planning_start, t.get("jiraStartDate"), t.get("jiraEndDate"), float(t["effortDays"])
-            )
         t["pendingDates"] = has_dates
+
+        # Явное перетаскивание/растягивание задачи само по себе даёт достаточно
+        # данных о её длительности — не требуем отдельно заполненных
+        # «трудозатрат» в Jira, чтобы задача считалась полностью заполненной.
+        has_effort_now = bool(t.get("hasEffort")) or has_effort_override or has_dates
+        t["isComplete"] = bool(t.get("jiraStartDate")) and bool(t.get("jiraEndDate")) and has_effort_now
+        date_range = (
+            compute_date_range(planning_start, t.get("jiraStartDate"), t.get("jiraEndDate"))
+            if t["isComplete"]
+            else None
+        )
+        t["dateRangeStartOffsetDays"] = round(date_range[0], 4) if date_range else None
+        t["dateRangeDurationDays"] = round(date_range[1], 4) if date_range else None
     return tasks
