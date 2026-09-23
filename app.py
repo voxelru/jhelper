@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 
 from board_logic import (
+    MAX_WINDOW_WORKING_DAYS,
     apply_pending_changes,
     build_rows,
     collect_jira_fields,
@@ -18,6 +20,7 @@ from board_logic import (
     iter_working_dates,
     normalize_issues,
     planning_bounds,
+    today_offset_days,
 )
 from jira_client import (
     JiraConfigError,
@@ -50,6 +53,24 @@ def jira_base_url() -> str:
     return (os.environ.get("JIRA_BASE_URL") or "").rstrip("/")
 
 
+def _query_date(name: str) -> date | None:
+    """Дата из query-параметра фильтра (?from=/?to=), ISO YYYY-MM-DD."""
+    raw = (request.args.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def requested_window(s: dict) -> tuple[date, date]:
+    """Окно шкалы: выбранное в фильтре по датам или горизонт по умолчанию.
+
+    Ограничений «не раньше сегодня» нет — окно может целиком лежать в прошлом."""
+    return planning_bounds(s, _query_date("from"), _query_date("to"))
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -59,7 +80,7 @@ def index():
 def api_settings():
     s = load_settings()
     order, colors = priorities_cfg(s)
-    start, end = planning_bounds(s)
+    start, end = requested_window(s)
     working_dates = [d.isoformat() for d in iter_working_dates(start, end)]
     etype, efid = effort_cfg(s)
     hk, hc = horizon_cfg(s)
@@ -71,6 +92,8 @@ def api_settings():
             "planningStart": start.isoformat(),
             "planningEnd": end.isoformat(),
             "planningHorizon": {"kind": hk, "count": hc},
+            "todayOffsetDays": today_offset_days(start),
+            "maxWindowWorkingDays": MAX_WINDOW_WORKING_DAYS,
             "workingDates": working_dates,
             "workingDayCount": len(working_dates),
             "effort": {"type": etype, "jiraFieldId": efid},
@@ -96,16 +119,19 @@ def api_board():
     except Exception as e:
         return jsonify({"error": f"Jira: {e}"}), 502
 
-    tasks = normalize_issues(issues, s)
+    start, end = requested_window(s)
+    today_offset = today_offset_days(start)
+    tasks = normalize_issues(issues, s, start)
     pending = read_pending(ROOT)
-    tasks = apply_pending_changes(tasks, pending, s)
+    tasks = apply_pending_changes(tasks, pending, s, start)
     sprints = sorted({t["sprint"] for t in tasks if t.get("sprint")})
     customers = sorted({t["customer"] for t in tasks if t.get("customer")})
-    board = build_rows(tasks, order)
-    start, end = planning_bounds(s)
+    board = build_rows(tasks, order, today_offset)
     board["meta"] = {
         "planningStart": start.isoformat(),
         "planningEnd": end.isoformat(),
+        "todayOffsetDays": today_offset,
+        "maxWindowWorkingDays": MAX_WINDOW_WORKING_DAYS,
         "workingDates": [d.isoformat() for d in iter_working_dates(start, end)],
         "pixelsPerWorkingDay": s.get("pixels_per_working_day", 36),
         "fields": fields_public_cfg(s),

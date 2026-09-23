@@ -21,9 +21,13 @@ from settings import (
 BASE_JIRA_FIELDS = ["summary", "assignee", "priority", "status", "timetracking"]
 
 
-def planning_bounds(settings: dict[str, Any]) -> tuple[date, date]:
-    kind, count = horizon_cfg(settings)
-    start = date.today()
+# Предохранитель на случай, когда в фильтре выбран очень широкий интервал:
+# больше этого числа рабочих дней на шкалу не строим.
+MAX_WINDOW_WORKING_DAYS = 400
+
+
+def _horizon_end(start: date, kind: str, count: int) -> date:
+    """Конец горизонта планирования, отсчитанного от start."""
     if kind == "working_days":
         collected: list[date] = []
         d = start
@@ -31,9 +35,47 @@ def planning_bounds(settings: dict[str, Any]) -> tuple[date, date]:
             if d.weekday() < 5:
                 collected.append(d)
             d += timedelta(days=1)
-        end = collected[-1] if collected else start
-        return start, end
-    return start, start + timedelta(days=count - 1)
+        return collected[-1] if collected else start
+    return start + timedelta(days=count - 1)
+
+
+def _cap_end(start: date, end: date) -> date:
+    """Подрезает конец окна, если в нём больше MAX_WINDOW_WORKING_DAYS рабочих дней."""
+    count = 0
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            count += 1
+            if count >= MAX_WINDOW_WORKING_DAYS:
+                return d
+        d += timedelta(days=1)
+    return end
+
+
+def planning_bounds(
+    settings: dict[str, Any],
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[date, date]:
+    """Окно шкалы времени.
+
+    По умолчанию — от сегодняшнего дня на горизонт планирования из настроек.
+    Фильтр по датам на странице может задать любой другой интервал, в том
+    числе целиком в прошлом: тогда шкала строится по нему (с ограничением
+    MAX_WINDOW_WORKING_DAYS на ширину окна).
+    """
+    kind, count = horizon_cfg(settings)
+    today = date.today()
+    if start and end and end < start:
+        start, end = end, start
+    if start is None and end is None:
+        start = today
+        end = _horizon_end(start, kind, count)
+    elif end is None:
+        end = _horizon_end(start, kind, count)
+    elif start is None:
+        start = min(today, end)
+    return start, _cap_end(start, end)
 
 
 def iter_working_dates(start: date, end: date) -> list[date]:
@@ -44,6 +86,13 @@ def iter_working_dates(start: date, end: date) -> list[date]:
             out.append(d)
         d += timedelta(days=1)
     return out
+
+
+def today_offset_days(planning_start: date) -> int:
+    """Номер сегодняшнего рабочего дня от начала окна (0 — окно начинается
+    сегодня или позже). От него стартует очередь незапланированных задач:
+    работу, у которой нет дат, нет смысла раскладывать в прошлое."""
+    return max(0, working_days_between(planning_start, date.today()))
 
 
 def working_days_between(start: date, end: date) -> int:
@@ -208,7 +257,9 @@ def compute_date_range(
     в Jira (в рабочих днях от planning_start), или None, если задана не обе даты."""
     if not jira_start or not jira_end:
         return None
-    start_offset = max(0.0, float(working_days_between(planning_start, date.fromisoformat(jira_start))))
+    # Смещение может быть отрицательным (задача началась раньше окна) — такую
+    # задачу доска покажет обрезанной по левому краю.
+    start_offset = float(working_days_between(planning_start, date.fromisoformat(jira_start)))
     end_offset_excl = float(working_days_between(planning_start, date.fromisoformat(jira_end)) + 1)
     duration = max(0.25, end_offset_excl - start_offset)
     return start_offset, duration
@@ -320,15 +371,23 @@ def fields_public_cfg(s: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any]) -> list[dict[str, Any]]:
-    """Превращает сырые issues Jira в задачи доски (без раскладки по строкам)."""
+def normalize_issues(
+    raw_issues: list[dict[str, Any]],
+    settings: dict[str, Any],
+    planning_start: date | None = None,
+) -> list[dict[str, Any]]:
+    """Превращает сырые issues Jira в задачи доски (без раскладки по строкам).
+
+    planning_start — начало окна шкалы, от которого считаются смещения задач
+    (по умолчанию — начало горизонта планирования)."""
     effort_type, effort_field_id = effort_cfg(settings)
     order, colors = priorities_cfg(settings)
     cust_fid = customer_field_id(settings)
     sprint_fid = sprint_field_id(settings)
     start_fid = date_field_cfg(settings, "start_date")
     end_fid = date_field_cfg(settings, "end_date")
-    planning_start, _planning_end = planning_bounds(settings)
+    if planning_start is None:
+        planning_start, _planning_end = planning_bounds(settings)
 
     tasks: list[dict[str, Any]] = []
     for issue in raw_issues:
@@ -404,7 +463,11 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
     return tasks
 
 
-def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
+def build_rows(
+    tasks: list[dict[str, Any]],
+    order: list[str],
+    today_offset: float = 0.0,
+) -> dict[str, Any]:
     """Группирует задачи по исполнителю и раскладывает их на диаграмме.
 
     Без автоматической расстановки по свободным промежуткам: полностью
@@ -414,6 +477,10 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
     приоритета, как в самой первой версии доски. Так между полностью
     заполненными задачами намеренно остаются пустые промежутки, куда
     можно вручную перетащить любую задачу.
+
+    today_offset — смещение сегодняшнего дня от начала окна: очередь
+    незапланированных задач начинается не раньше него, чтобы при просмотре
+    прошлого они не раскладывались задним числом.
     """
     by_assignee: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
@@ -437,13 +504,16 @@ def build_rows(tasks: list[dict[str, Any]], order: list[str]) -> dict[str, Any]:
         complete.sort(key=lambda t: (float(t["dateRangeStartOffsetDays"]), *sort_key(t)))
 
         placed: list[dict[str, Any]] = []
-        cursor = 0.0
+        cursor: float | None = None
         for item in complete:
             duration = float(item["dateRangeDurationDays"])
-            start = max(float(item["dateRangeStartOffsetDays"]), cursor)
+            start = float(item["dateRangeStartOffsetDays"])
+            if cursor is not None:
+                start = max(start, cursor)
             placed.append({**item, "startOffsetDays": round(start, 4), "durationDays": round(duration, 4)})
             cursor = start + duration
 
+        cursor = float(today_offset) if cursor is None else max(cursor, float(today_offset))
         for item in incomplete:
             duration = float(item["effortDays"])
             placed.append({**item, "startOffsetDays": round(cursor, 4), "durationDays": round(duration, 4)})
@@ -459,12 +529,14 @@ def apply_pending_changes(
     tasks: list[dict[str, Any]],
     pending: dict[str, dict[str, Any]],
     settings: dict[str, Any],
+    planning_start: date | None = None,
 ) -> list[dict[str, Any]]:
     """Накладывает локальные несохранённые изменения на задачи.
 
     Это исполнитель и положение задачи (дата начала + дата окончания +
     продолжительность), которое всегда лежит в pending целиком."""
-    planning_start, _ = planning_bounds(settings)
+    if planning_start is None:
+        planning_start, _ = planning_bounds(settings)
     for t in tasks:
         key = t.get("key")
         item = pending.get(key) if (pending and key) else None

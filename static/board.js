@@ -94,14 +94,21 @@
     });
     incomplete.sort((a, b) => compareSortKeys(taskSortKey(a), taskSortKey(b)));
 
-    let cursor = 0;
+    // cursor = null, пока не размещена первая задача: смещение может быть и
+    // отрицательным (задача началась раньше выбранного окна).
+    let cursor = null;
     for (const t of complete) {
       t.durationDays = t.dateRangeDurationDays;
-      const start = Math.max(t.dateRangeStartOffsetDays, cursor);
+      const start =
+        cursor === null ? t.dateRangeStartOffsetDays : Math.max(t.dateRangeStartOffsetDays, cursor);
       t.startOffsetDays = Math.round(start * 10000) / 10000;
       cursor = start + t.durationDays;
     }
 
+    // Задачи без дат не раскладываем задним числом: очередь начинается не
+    // раньше сегодняшнего дня (todayOffsetDays — его смещение от начала окна).
+    const todayOffset = Number((settings && settings.todayOffsetDays) || 0);
+    cursor = cursor === null ? todayOffset : Math.max(cursor, todayOffset);
     for (const t of incomplete) {
       t.durationDays = t.effortDays;
       t.startOffsetDays = Math.round(cursor * 10000) / 10000;
@@ -187,27 +194,36 @@
     selectedCustomer = populateFilterSelect(customerFilterEl, customers, selectedCustomer, "Все бизнес-партнёры");
   }
 
-  function clampToHorizon(iso) {
-    if (!iso || !settings) return "";
-    if (settings.planningStart && iso < settings.planningStart) return settings.planningStart;
-    if (settings.planningEnd && iso > settings.planningEnd) return settings.planningEnd;
-    return iso;
-  }
-
   function syncRangeInputs() {
-    if (!settings) return;
-    rangeFromEl.min = settings.planningStart || "";
-    rangeFromEl.max = settings.planningEnd || "";
-    rangeToEl.min = settings.planningStart || "";
-    rangeToEl.max = settings.planningEnd || "";
     rangeFromEl.value = rangeFrom;
     rangeToEl.value = rangeTo;
   }
 
-  /** Диапазон по умолчанию — весь горизонт планирования. */
+  /** Query-строка окна шкалы для /api/settings и /api/board. */
+  function rangeQuery() {
+    const params = new URLSearchParams();
+    if (rangeFrom) params.set("from", rangeFrom);
+    if (rangeTo) params.set("to", rangeTo);
+    const q = params.toString();
+    return q ? `?${q}` : "";
+  }
+
+  /**
+   * Подхватывает окно, которое реально построил сервер: он может подрезать
+   * слишком широкий интервал (maxWindowWorkingDays) или достроить вторую
+   * границу, если заполнена только одна.
+   */
+  function adoptServerWindow(meta) {
+    if (!meta) return;
+    if (meta.planningStart) rangeFrom = meta.planningStart;
+    if (meta.planningEnd) rangeTo = meta.planningEnd;
+    syncRangeInputs();
+  }
+
+  /** Диапазон по умолчанию — горизонт планирования от сегодняшнего дня. */
   function resetDateRange() {
-    rangeFrom = (settings && settings.planningStart) || "";
-    rangeTo = (settings && settings.planningEnd) || "";
+    rangeFrom = "";
+    rangeTo = "";
     syncRangeInputs();
   }
 
@@ -548,9 +564,9 @@
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;
-        // Правый край обрезан диапазоном — тянуть его нельзя: настоящая дата
-        // окончания задачи вне видимого окна.
-        if (!box.clipRight) {
+        // Задачу, обрезанную границей окна, тянуть за край нельзя: её
+        // настоящие даты лежат за пределами видимой шкалы.
+        if (!box.clipLeft && !box.clipRight) {
           const resizeEl = document.createElement("div");
           resizeEl.className = "task-resize";
           resizeEl.title = "Изменить продолжительность";
@@ -726,7 +742,7 @@
   async function loadBoard() {
     setStatus("Загрузка…");
     boardEl.setAttribute("aria-busy", "true");
-    const r = await fetch("/api/board");
+    const r = await fetch(`/api/board${rangeQuery()}`);
     const data = await r.json();
     if (!r.ok) {
       boardEl.innerHTML = `<div class="error-banner">${escapeHtml(data.error || "Ошибка")}</div>`;
@@ -740,10 +756,18 @@
     if (data.meta && data.meta.jiraBaseUrl && settings) {
       settings.jiraBaseUrl = data.meta.jiraBaseUrl;
     }
+    // Шкалу берём из ответа: окно строит сервер, и оно могло быть подрезано.
+    if (data.meta && settings) {
+      if (Array.isArray(data.meta.workingDates)) {
+        settings.workingDates = data.meta.workingDates;
+        settings.workingDayCount = data.meta.workingDates.length;
+      }
+      if (data.meta.planningStart) settings.planningStart = data.meta.planningStart;
+      if (data.meta.planningEnd) settings.planningEnd = data.meta.planningEnd;
+      settings.todayOffsetDays = Number(data.meta.todayOffsetDays || 0);
+    }
     pendingCount = (data.meta && data.meta.pendingCount) || 0;
-    rangeFrom = clampToHorizon(rangeFrom) || (settings && settings.planningStart) || "";
-    rangeTo = clampToHorizon(rangeTo) || (settings && settings.planningEnd) || "";
-    syncRangeInputs();
+    adoptServerWindow(data.meta);
     updateSaveButton();
     populateSprintFilter();
     populateCustomerFilter();
@@ -843,32 +867,34 @@
     render();
   });
 
-  rangeFromEl.addEventListener("change", () => {
-    rangeFrom = clampToHorizon(rangeFromEl.value) || (settings && settings.planningStart) || "";
-    if (rangeTo && rangeFrom > rangeTo) rangeTo = rangeFrom;
+  // Даты в фильтре ничем не ограничены — окно можно увести и в прошлое.
+  // Шкалу на новый интервал строит сервер, поэтому доску перезапрашиваем.
+  function reloadForRange() {
     syncRangeInputs();
-    render();
+    loadBoard().catch((e) => setStatus(String(e.message || e), true));
+  }
+
+  rangeFromEl.addEventListener("change", () => {
+    rangeFrom = rangeFromEl.value || "";
+    if (rangeFrom && rangeTo && rangeFrom > rangeTo) rangeTo = rangeFrom;
+    reloadForRange();
   });
 
   rangeToEl.addEventListener("change", () => {
-    rangeTo = clampToHorizon(rangeToEl.value) || (settings && settings.planningEnd) || "";
-    if (rangeFrom && rangeTo < rangeFrom) rangeFrom = rangeTo;
-    syncRangeInputs();
-    render();
+    rangeTo = rangeToEl.value || "";
+    if (rangeFrom && rangeTo && rangeTo < rangeFrom) rangeFrom = rangeTo;
+    reloadForRange();
   });
 
   btnRangeReset.addEventListener("click", () => {
     resetDateRange();
-    render();
+    reloadForRange();
   });
 
   updateSaveButton();
 
   loadSettings()
-    .then(() => {
-      resetDateRange();
-      return loadBoard();
-    })
+    .then(() => loadBoard())
     .catch((e) => {
       boardEl.innerHTML = `<div class="error-banner">${escapeHtml(String(e.message || e))}</div>`;
       setStatus("", true);
