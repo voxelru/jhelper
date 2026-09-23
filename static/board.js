@@ -799,6 +799,27 @@
     return m.rows.reduce((a, r) => a + r.tasks.length, 0);
   }
 
+  const FIELD_LABELS = {
+    assignee: "исполнитель",
+    effort: "трудозатраты",
+    startDate: "дата начала",
+    endDate: "дата окончания",
+  };
+
+  /** Короткое описание полей, которые сервер не стал писать в Jira, с причиной. */
+  function describeSkipped(skipped) {
+    const byReason = new Map();
+    for (const s of skipped) {
+      const label = FIELD_LABELS[s.field] || s.field;
+      const reason = s.reason || "причина не указана";
+      const key = `${label} — ${reason}`;
+      byReason.set(key, (byReason.get(key) || 0) + 1);
+    }
+    return Array.from(byReason.entries())
+      .map(([text, count]) => (count > 1 ? `${text} (задач: ${count})` : text))
+      .join("; ");
+  }
+
   async function saveToJira() {
     if (pendingCount <= 0) return;
     btnSave.disabled = true;
@@ -812,9 +833,13 @@
       pendingCount = data.count || 0;
       updateSaveButton();
       const failed = Array.isArray(data.failed) ? data.failed : [];
+      const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+      const skippedNote = skipped.length ? ` Не записано в Jira: ${describeSkipped(skipped)}.` : "";
       if (failed.length) {
         const keys = failed.map((f) => f.key).join(", ");
-        setStatus(`Сохранено: ${data.saved || 0}. Ошибки: ${keys}`, true);
+        setStatus(`Сохранено: ${data.saved || 0}. Ошибки: ${keys}.${skippedNote}`, true);
+      } else if (skipped.length) {
+        setStatus(`Сохранено в Jira: ${data.saved || 0}.${skippedNote}`, true);
       } else {
         setStatus(`Сохранено в Jira: ${data.saved || 0}`);
       }

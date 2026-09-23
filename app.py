@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date
 from pathlib import Path
@@ -45,6 +46,14 @@ from settings import date_field_cfg, effort_cfg, horizon_cfg, load_settings, pri
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
+
+# Логи записи в Jira: уровень задаётся LOG_LEVEL (по умолчанию INFO), сами
+# запросы пишет jira_client через logger «jhelper.jira».
+logging.basicConfig(
+    level=(os.environ.get("LOG_LEVEL") or "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("jhelper.save")
 
 app = Flask(__name__)
 
@@ -231,16 +240,21 @@ def api_save():
 
     saved = 0
     failed: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
     remaining: dict[str, dict] = {}
+
+    log.info("Сохранение в Jira: задач с изменениями — %d", len(changes))
 
     for key, item in changes.items():
         remaining_item: dict = {}
 
         if "assigneeId" in item:
             try:
+                log.info("%s: исполнитель -> %s", key, item["assigneeId"])
                 update_issue_assignee(base, session, key, item["assigneeId"])
                 saved += 1
             except Exception as e:
+                log.error("%s: исполнитель не сохранён: %s", key, e)
                 failed.append({"key": key, "field": "assignee", "error": str(e)})
                 remaining_item["assigneeId"] = item["assigneeId"]
                 remaining_item["assigneeName"] = item.get("assigneeName", item["assigneeId"])
@@ -253,22 +267,46 @@ def api_save():
         if "effortDays" in item:
             try:
                 raw = effort_days_to_jira_raw(item["effortDays"], effort_type, s)
+                log.info(
+                    "%s: трудозатраты -> %s рабочих дней (в Jira: %r, тип %s)",
+                    key,
+                    item["effortDays"],
+                    raw,
+                    effort_type,
+                )
                 update_issue_effort(base, session, key, effort_type, effort_field_id, raw)
                 saved += 1
             except Exception as e:
+                log.error("%s: трудозатраты не сохранены: %s", key, e)
                 failed.append({"key": key, "field": "effort", "error": str(e)})
                 placement_failed = True
 
         # Дата без настроенного jira_field_id — чисто расчётная: она есть в
-        # pending-записи для полноты, но писать её в Jira некуда, это не ошибка.
-        for field_name, field_id in (("startDate", start_fid), ("endDate", end_fid)):
+        # pending-записи для полноты, но писать её в Jira некуда. Это не ошибка,
+        # но и не молчаливая потеря: такие поля попадают в лог и в ответ (skipped).
+        for field_name, field_id, cfg_key in (
+            ("startDate", start_fid, "fields.start_date.jira_field_id"),
+            ("endDate", end_fid, "fields.end_date.jira_field_id"),
+        ):
+            if field_name not in item:
+                continue
             value = item.get(field_name)
-            if field_name not in item or not value or not field_id:
+            if not value:
+                reason = "в изменении нет значения даты"
+                log.warning("%s: %s не сохранена — %s", key, field_name, reason)
+                skipped.append({"key": key, "field": field_name, "reason": reason})
+                continue
+            if not field_id:
+                reason = f"не задан {cfg_key} в config/app_settings.yaml"
+                log.warning("%s: %s (%s) не сохранена — %s", key, field_name, value, reason)
+                skipped.append({"key": key, "field": field_name, "reason": reason})
                 continue
             try:
+                log.info("%s: %s -> %s (поле Jira %s)", key, field_name, value, field_id)
                 update_issue_date(base, session, key, field_id, value)
                 saved += 1
             except Exception as e:
+                log.error("%s: %s не сохранена: %s", key, field_name, e)
                 failed.append({"key": key, "field": field_name, "error": str(e)})
                 placement_failed = True
 
@@ -286,12 +324,20 @@ def api_save():
         write_pending(ROOT, {})
     reset_history(ROOT)
 
+    log.info(
+        "Сохранение завершено: записано полей — %d, ошибок — %d, пропущено — %d",
+        saved,
+        len(failed),
+        len(skipped),
+    )
+
     status = 200 if not failed else 207
     return (
         jsonify(
             {
                 "saved": saved,
                 "failed": failed,
+                "skipped": skipped,
                 "remaining": pending_list(remaining),
                 "count": len(remaining),
             }

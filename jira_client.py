@@ -1,15 +1,63 @@
-"""Минимальный клиент Jira REST API для задач из JQL (Basic Auth: логин + пароль)."""
+"""Минимальный клиент Jira REST API для задач из JQL (Basic Auth: логин + пароль).
+
+Каждая запись в Jira логируется через logger «jhelper.jira»: что за поле, в
+какое поле Jira, с каким значением, по какому URL и что ответил сервер. Уровень
+подробности задаётся переменной окружения LOG_LEVEL (см. app.py).
+"""
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import requests
 
+logger = logging.getLogger("jhelper.jira")
+
 
 class JiraConfigError(RuntimeError):
     pass
+
+
+def _short(value: Any, limit: int = 300) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def _put_issue_fields(
+    base_url: str,
+    session: requests.Session,
+    issue_key: str,
+    payload: dict[str, Any],
+    *,
+    what: str,
+) -> requests.Response:
+    """PUT полей задачи с логированием запроса и ответа.
+
+    Сначала пробует REST API v2, при 404 повторяет запрос на v3 (Jira Cloud).
+    Возвращает последний ответ — решение об ошибке принимает вызывающий код.
+    """
+    response: requests.Response | None = None
+    for api_version in ("2", "3"):
+        url = f"{base_url}/rest/api/{api_version}/issue/{issue_key}"
+        logger.info("Jira PUT %s | %s | %s", url, what, _short(payload))
+        response = session.put(url, json=payload, timeout=60)
+        if response.status_code in (200, 204):
+            logger.info("Jira PUT %s | %s | OK (%s)", issue_key, what, response.status_code)
+            return response
+        if response.status_code == 404 and api_version == "2":
+            logger.warning("Jira PUT %s | %s | 404 на api/2, повтор на api/3", issue_key, what)
+            continue
+        logger.error(
+            "Jira PUT %s | %s | %s: %s",
+            issue_key,
+            what,
+            response.status_code,
+            response.text[:300],
+        )
+        return response
+    return response
 
 
 def _require_env(name: str) -> str:
@@ -81,30 +129,25 @@ def update_issue_assignee(
     assignee_id: str,
 ) -> None:
     """Меняет исполнителя задачи (Jira Server/DC: name; Cloud: accountId)."""
-    issue_url = f"{base_url}/rest/api/2/issue/{issue_key}"
-    payloads = [
-        {"fields": {"assignee": {"name": assignee_id}}},
-        {"fields": {"assignee": {"accountId": assignee_id}}},
-        {"fields": {"assignee": {"key": assignee_id}}},
+    variants = [
+        ("assignee.name", {"fields": {"assignee": {"name": assignee_id}}}),
+        ("assignee.accountId", {"fields": {"assignee": {"accountId": assignee_id}}}),
+        ("assignee.key", {"fields": {"assignee": {"key": assignee_id}}}),
     ]
     errors: list[str] = []
-    for payload in payloads:
-        r = session.put(issue_url, json=payload, timeout=60)
+    for variant, payload in variants:
+        r = _put_issue_fields(
+            base_url,
+            session,
+            issue_key,
+            payload,
+            what=f"исполнитель ({variant}) = {assignee_id}",
+        )
         if r.status_code in (200, 204):
             return
-        if r.status_code == 404:
-            r3 = session.put(
-                f"{base_url}/rest/api/3/issue/{issue_key}",
-                json=payload,
-                timeout=60,
-            )
-            if r3.status_code in (200, 204):
-                return
-            errors.append(f"{r3.status_code}: {r3.text[:300]}")
-            continue
-        # 400 часто значит «не тот идентификатор исполнителя» — пробуем следующий вариант
-        if r.status_code == 400:
-            errors.append(f"{r.status_code}: {r.text[:300]}")
+        # 400/404 часто значит «не тот идентификатор исполнителя» — пробуем следующий вариант
+        if r.status_code in (400, 404):
+            errors.append(f"{variant} -> {r.status_code}: {r.text[:300]}")
             continue
         r.raise_for_status()
     detail = " | ".join(errors) if errors else "unknown"
@@ -120,17 +163,20 @@ def update_issue_date(
 ) -> None:
     """Записывает дату (начала/окончания) в поле Jira, формат YYYY-MM-DD."""
     payload = {"fields": {field_id: iso_date}}
-    issue_url = f"{base_url}/rest/api/2/issue/{issue_key}"
-    r = session.put(issue_url, json=payload, timeout=60)
+    r = _put_issue_fields(
+        base_url,
+        session,
+        issue_key,
+        payload,
+        what=f"дата в поле {field_id} = {iso_date}",
+    )
     if r.status_code in (200, 204):
         return
-    if r.status_code == 404:
-        r3 = session.put(f"{base_url}/rest/api/3/issue/{issue_key}", json=payload, timeout=60)
-        if r3.status_code in (200, 204):
-            return
-        raise RuntimeError(f"Не удалось сохранить дату для {issue_key}: {r3.status_code}: {r3.text[:300]}")
-    if r.status_code == 400:
-        raise RuntimeError(f"Не удалось сохранить дату для {issue_key}: {r.status_code}: {r.text[:300]}")
+    if r.status_code in (400, 404):
+        raise RuntimeError(
+            f"Не удалось сохранить дату в поле {field_id} для {issue_key}: "
+            f"{r.status_code}: {r.text[:300]}"
+        )
     r.raise_for_status()
 
 
@@ -154,15 +200,17 @@ def update_issue_effort(
     else:
         raise RuntimeError(f"Сохранение трудозатрат не поддерживается для типа {effort_type}")
 
-    issue_url = f"{base_url}/rest/api/2/issue/{issue_key}"
-    r = session.put(issue_url, json=payload, timeout=60)
+    r = _put_issue_fields(
+        base_url,
+        session,
+        issue_key,
+        payload,
+        what=f"трудозатраты ({effort_type}) = {raw_value}",
+    )
     if r.status_code in (200, 204):
         return
-    if r.status_code == 404:
-        r3 = session.put(f"{base_url}/rest/api/3/issue/{issue_key}", json=payload, timeout=60)
-        if r3.status_code in (200, 204):
-            return
-        raise RuntimeError(f"Не удалось сохранить трудозатраты для {issue_key}: {r3.status_code}: {r3.text[:300]}")
-    if r.status_code == 400:
-        raise RuntimeError(f"Не удалось сохранить трудозатраты для {issue_key}: {r.status_code}: {r.text[:300]}")
+    if r.status_code in (400, 404):
+        raise RuntimeError(
+            f"Не удалось сохранить трудозатраты для {issue_key}: {r.status_code}: {r.text[:300]}"
+        )
     r.raise_for_status()

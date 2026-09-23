@@ -211,6 +211,7 @@ python app.py
 | `HOST`        | `127.0.0.1`  | Адрес, на котором слушает Flask |
 | `PORT`        | `5000`       | Порт |
 | `FLASK_DEBUG` | `false`      | Debug-режим Flask (реload, подробные ошибки). Не включайте в проде |
+| `LOG_LEVEL`   | `INFO`       | Уровень логирования. На `INFO` каждая запись поля в Jira печатается в консоль: задача, поле, значение, URL запроса и ответ сервера |
 
 ## API
 
@@ -224,7 +225,20 @@ python app.py
 | `POST` | `/api/pending/placement` | Записать положение задачи после любого перемещения или изменения размера — всегда тремя параметрами сразу. Тело: `{"key", "startDate", "endDate", "effortDays", "originalStartDate", "originalEndDate", "originalEffortDays"}`. Если все три значения совпали с исходными из Jira, все три удаляются из записи (откат к исходному); смена исполнителя в той же записи при этом сохраняется |
 | `POST` | `/api/pending/undo` | Отменить последнее несохранённое действие (кнопка ↩), вернувшись к предыдущему состоянию `pending_changes.json`. История хранится в `pending_changes_history.json` (до 20 шагов) и сбрасывается после `/api/save` |
 | `POST` | `/api/pending/clear` | Отменить сразу все несохранённые изменения (кнопка ✕). Само это действие тоже попадает в историю и может быть отменено через `/api/pending/undo` |
-| `POST` | `/api/save`     | Отправить все несохранённые изменения в Jira (`PUT /rest/api/{2,3}/issue/{key}`): исполнителя, трудозатраты и даты. Даты без настроенного `jira_field_id` пропускаются (это не ошибка). Успешные части удаляются из pending-файла, неудачные остаются и возвращаются в `failed` (с полем `field`: `assignee`, `effort`, `startDate` или `endDate`); положение возвращается в файл целиком — все три параметра вместе |
+| `POST` | `/api/save`     | Отправить все несохранённые изменения в Jira (`PUT /rest/api/{2,3}/issue/{key}`): исполнителя, трудозатраты и даты. Даты без настроенного `jira_field_id` пропускаются (это не ошибка) и возвращаются в списке `skipped` с причиной. Успешные части удаляются из pending-файла, неудачные остаются и возвращаются в `failed` (с полем `field`: `assignee`, `effort`, `startDate` или `endDate`); положение возвращается в файл целиком — все три параметра вместе |
+
+### Логи записи в Jira
+
+Каждое обращение к Jira на запись логируется (logger `jhelper.jira`), а ход сохранения — logger `jhelper.save`. Так видно, какое поле ушло в Jira, с каким значением и что ответил сервер:
+
+```
+INFO jhelper.save: ABC-1: startDate -> 2026-10-05 (поле Jira customfield_start)
+INFO jhelper.jira: Jira PUT https://jira.example/rest/api/2/issue/ABC-1 | дата в поле customfield_start = 2026-10-05 | {'fields': {'customfield_start': '2026-10-05'}}
+ERROR jhelper.jira: Jira PUT ABC-1 | дата в поле customfield_start = 2026-10-05 | 400: {"errors":{"customfield_start":"Field cannot be set"}}
+WARNING jhelper.save: ABC-1: startDate (2026-10-05) не сохранена — не задан fields.start_date.jira_field_id в config/app_settings.yaml
+```
+
+Поле, у которого не задан `jira_field_id`, в Jira не отправляется: раньше это происходило молча, теперь такие поля попадают в лог (`WARNING`) и в ответ `/api/save` в списке `skipped`, а страница показывает их в строке состояния. Именно так выглядит случай «дата начала не доходит до Jira»: `fields.start_date.jira_field_id` не заполнен.
 
 Приложение пишет в Jira только по явному действию пользователя (кнопка «Сохранить в Jira») и только настроенные поля: исполнителя (`assignee`), плановые трудозатраты (`timetracking` или настроенное кастомное поле — см. `effort.type`) и, если задан `jira_field_id`, даты начала/окончания (`fields.start_date`/`fields.end_date`). Остальные поля (названия, приоритеты, статусы и т.п.) приложение в Jira не меняет.
 
