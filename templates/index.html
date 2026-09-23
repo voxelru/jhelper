@@ -17,6 +17,11 @@
     <select id="customer-filter">
       <option value="">Все бизнес-партнёры</option>
     </select>
+    <label class="sprint-filter-label" for="range-from">Даты:</label>
+    <input type="date" id="range-from" class="range-input" aria-label="Показывать календарные дни начиная с даты" />
+    <span class="range-dash">—</span>
+    <input type="date" id="range-to" class="range-input" aria-label="Показывать календарные дни по дату включительно" />
+    <button type="button" id="btn-range-reset" class="icon-btn" title="Весь горизонт планирования" aria-label="Сбросить фильтр по датам">↺</button>
     <input type="search" id="search-input" placeholder="Поиск по номеру или заголовку…" aria-label="Поиск по номеру или заголовку задачи" />
     <button type="button" id="btn-refresh">Обновить из Jira</button>
     <button type="button" id="btn-undo" class="icon-btn" disabled title="Отменить последнее действие" aria-label="Отменить последнее действие">↩</button>

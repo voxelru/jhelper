@@ -20,7 +20,9 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 1rem;
+  row-gap: 0.5rem;
   padding: 0.75rem 1rem;
   background: #fff;
   border-bottom: 1px solid var(--border);
@@ -46,6 +48,21 @@ body {
   background: #fff;
   font-size: 0.85rem;
   color: #263238;
+}
+
+.range-input {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 0.85rem;
+  color: #263238;
+  font-family: inherit;
+}
+
+.range-dash {
+  color: #90a4ae;
+  margin: 0 -0.55rem;
 }
 
 #search-input {
@@ -314,6 +331,30 @@ body {
 
 .task.filtered-out {
   display: none;
+}
+
+/* Задача выходит за границу выбранного диапазона дат: обрезанный край рисуем
+   без скругления и с «разрывом», чтобы было видно, что блок продолжается. */
+.task.clip-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 2px dashed rgba(255, 255, 255, 0.75);
+  padding-left: 4px;
+}
+
+.task.clip-right {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 2px dashed rgba(255, 255, 255, 0.75);
+  padding-right: 4px;
+}
+
+.empty-banner {
+  padding: 1rem;
+  background: #eceff1;
+  color: #455a64;
+  border-radius: 8px;
+  margin: 1rem;
 }
 
 .task-resize {

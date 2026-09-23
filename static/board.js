@@ -1,5 +1,5 @@
 /**
- * Доска: рабочие дни в шапке, строки — сотрудники,
+ * Доска: рабочие дни выбранного диапазона в шапке, строки — сотрудники,
  * блоки — 3 строки (ключ / title / заказчик), подсказка при наведении.
  * Смена исполнителя (drag-and-drop между строками) и положение задачи
  * (перетаскивание по датам, растягивание прямоугольника) копятся до нажатия
@@ -18,6 +18,9 @@
   const sprintFilterEl = document.getElementById("sprint-filter");
   const customerFilterEl = document.getElementById("customer-filter");
   const searchInputEl = document.getElementById("search-input");
+  const rangeFromEl = document.getElementById("range-from");
+  const rangeToEl = document.getElementById("range-to");
+  const btnRangeReset = document.getElementById("btn-range-reset");
 
   let settings = null;
   /** @type {{ rows: any[], meta: any } | null} */
@@ -27,6 +30,9 @@
   let selectedSprint = "";
   let selectedCustomer = "";
   let searchQuery = "";
+  /** Фильтр по датам: какие календарные дни горизонта показывать на шкале (ISO, включительно). */
+  let rangeFrom = "";
+  let rangeTo = "";
 
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
@@ -103,9 +109,48 @@
     }
   }
 
-  function totalTrackWidth() {
+  /**
+   * Видимое окно шкалы: часть рабочих дней горизонта, попадающая в фильтр по
+   * датам. startIndex/endIndex — границы окна в тех же единицах, в которых
+   * задачи хранят startOffsetDays (номер рабочего дня от начала горизонта),
+   * endIndex не включается.
+   */
+  function visibleWindow() {
+    const dates = (settings && settings.workingDates) || [];
+    let startIndex = 0;
+    let endIndex = dates.length;
+    if (rangeFrom) {
+      while (startIndex < endIndex && dates[startIndex] < rangeFrom) startIndex++;
+    }
+    if (rangeTo) {
+      while (endIndex > startIndex && dates[endIndex - 1] > rangeTo) endIndex--;
+    }
+    return { startIndex, endIndex, dates: dates.slice(startIndex, endIndex) };
+  }
+
+  /**
+   * Положение блока задачи внутри видимого окна. Задача, выходящая за границу
+   * диапазона, отображается только своей попадающей в него частью
+   * (clipLeft/clipRight помечают обрезанные края). null — задача целиком вне
+   * окна и не показывается.
+   */
+  function taskViewBox(task, view) {
+    const taskStart = task.startOffsetDays;
+    const taskEnd = task.startOffsetDays + task.durationDays;
+    const from = Math.max(taskStart, view.startIndex);
+    const to = Math.min(taskEnd, view.endIndex);
+    if (to <= from) return null;
+    return {
+      left: (from - view.startIndex) * ppd,
+      width: Math.max(4, (to - from) * ppd - 2),
+      clipLeft: taskStart < view.startIndex,
+      clipRight: taskEnd > view.endIndex,
+    };
+  }
+
+  function trackWidth(view) {
     if (!settings) return 800;
-    return settings.workingDayCount * ppd;
+    return Math.max(1, view.dates.length) * ppd;
   }
 
   function rebuildAllPacks() {
@@ -142,6 +187,30 @@
     selectedCustomer = populateFilterSelect(customerFilterEl, customers, selectedCustomer, "Все бизнес-партнёры");
   }
 
+  function clampToHorizon(iso) {
+    if (!iso || !settings) return "";
+    if (settings.planningStart && iso < settings.planningStart) return settings.planningStart;
+    if (settings.planningEnd && iso > settings.planningEnd) return settings.planningEnd;
+    return iso;
+  }
+
+  function syncRangeInputs() {
+    if (!settings) return;
+    rangeFromEl.min = settings.planningStart || "";
+    rangeFromEl.max = settings.planningEnd || "";
+    rangeToEl.min = settings.planningStart || "";
+    rangeToEl.max = settings.planningEnd || "";
+    rangeFromEl.value = rangeFrom;
+    rangeToEl.value = rangeTo;
+  }
+
+  /** Диапазон по умолчанию — весь горизонт планирования. */
+  function resetDateRange() {
+    rangeFrom = (settings && settings.planningStart) || "";
+    rangeTo = (settings && settings.planningEnd) || "";
+    syncRangeInputs();
+  }
+
   function taskMatchesFilters(t) {
     if (selectedSprint && t.sprint !== selectedSprint) return false;
     if (selectedCustomer && t.customer !== selectedCustomer) return false;
@@ -164,7 +233,10 @@
   function offsetDaysFromClientX(rowEl, clientX) {
     const track = rowEl.querySelector(".row-track");
     const rect = track.getBoundingClientRect();
-    const raw = (clientX - rect.left) / ppd;
+    const view = visibleWindow();
+    // Координата внутри трека — это смещение от начала видимого окна, а не от
+    // начала горизонта планирования.
+    const raw = view.startIndex + (clientX - rect.left) / ppd;
     const maxOffset = Math.max(0, (settings.workingDayCount || 1) - 1);
     return Math.min(maxOffset, Math.max(0, Math.round(raw)));
   }
@@ -384,6 +456,13 @@
     ppd = Number(settings.pixelsPerWorkingDay || 36);
     boardEl.style.setProperty("--ppd", `${ppd}px`);
 
+    const view = visibleWindow();
+    if (!view.dates.length) {
+      boardEl.innerHTML = `<div class="empty-banner">В выбранном диапазоне дат нет рабочих дней.</div>`;
+      boardEl.setAttribute("aria-busy", "false");
+      return;
+    }
+
     const inner = document.createElement("div");
     inner.className = "board-inner";
 
@@ -397,9 +476,9 @@
 
     const timeline = document.createElement("div");
     timeline.className = "timeline";
-    timeline.style.width = `${totalTrackWidth()}px`;
+    timeline.style.width = `${trackWidth(view)}px`;
 
-    for (const iso of settings.workingDates) {
+    for (const iso of view.dates) {
       const d = new Date(iso + "T00:00:00");
       const cell = document.createElement("div");
       cell.className = "timeline-day";
@@ -416,7 +495,14 @@
     inner.appendChild(header);
 
     for (const row of model.rows) {
-      const visibleTasks = row.tasks.filter(taskMatchesFilters);
+      // Задача попадает на доску, если проходит фильтры и хотя бы частью
+      // попадает в выбранный диапазон дат.
+      const visibleTasks = [];
+      for (const t of row.tasks) {
+        if (!taskMatchesFilters(t)) continue;
+        const box = taskViewBox(t, view);
+        if (box) visibleTasks.push({ task: t, box });
+      }
       if (!visibleTasks.length) continue;
 
       const rowEl = document.createElement("div");
@@ -430,20 +516,22 @@
 
       const track = document.createElement("div");
       track.className = "row-track";
-      track.style.width = `${totalTrackWidth()}px`;
+      track.style.width = `${trackWidth(view)}px`;
 
-      for (const t of visibleTasks) {
+      for (const { task: t, box } of visibleTasks) {
         const el = document.createElement("div");
         const isResizing = !!(resizeState && resizeState.task === t);
         el.className =
           "task" +
           (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
-          (isResizing ? " resizing" : "");
+          (isResizing ? " resizing" : "") +
+          (box.clipLeft ? " clip-left" : "") +
+          (box.clipRight ? " clip-right" : "");
         el.draggable = true;
         el.dataset.issueKey = t.key;
         el.style.background = t.color;
-        el.style.left = `${t.startOffsetDays * ppd}px`;
-        el.style.width = `${Math.max(4, t.durationDays * ppd - 2)}px`;
+        el.style.left = `${box.left}px`;
+        el.style.width = `${box.width}px`;
 
         const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
         const keyHtml = base
@@ -460,13 +548,17 @@
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;
-        const resizeEl = document.createElement("div");
-        resizeEl.className = "task-resize";
-        resizeEl.title = "Изменить трудозатраты";
-        el.appendChild(resizeEl);
+        // Правый край обрезан диапазоном — тянуть его нельзя: настоящая дата
+        // окончания задачи вне видимого окна.
+        if (!box.clipRight) {
+          const resizeEl = document.createElement("div");
+          resizeEl.className = "task-resize";
+          resizeEl.title = "Изменить продолжительность";
+          el.appendChild(resizeEl);
+          wireTaskResize(resizeEl, t, row);
+        }
 
         wireTaskTooltip(el, t);
-        wireTaskResize(resizeEl, t, row);
         wireTaskOpenInJira(el, t);
         track.appendChild(el);
       }
@@ -649,6 +741,9 @@
       settings.jiraBaseUrl = data.meta.jiraBaseUrl;
     }
     pendingCount = (data.meta && data.meta.pendingCount) || 0;
+    rangeFrom = clampToHorizon(rangeFrom) || (settings && settings.planningStart) || "";
+    rangeTo = clampToHorizon(rangeTo) || (settings && settings.planningEnd) || "";
+    syncRangeInputs();
     updateSaveButton();
     populateSprintFilter();
     populateCustomerFilter();
@@ -748,10 +843,32 @@
     render();
   });
 
+  rangeFromEl.addEventListener("change", () => {
+    rangeFrom = clampToHorizon(rangeFromEl.value) || (settings && settings.planningStart) || "";
+    if (rangeTo && rangeFrom > rangeTo) rangeTo = rangeFrom;
+    syncRangeInputs();
+    render();
+  });
+
+  rangeToEl.addEventListener("change", () => {
+    rangeTo = clampToHorizon(rangeToEl.value) || (settings && settings.planningEnd) || "";
+    if (rangeFrom && rangeTo < rangeFrom) rangeFrom = rangeTo;
+    syncRangeInputs();
+    render();
+  });
+
+  btnRangeReset.addEventListener("click", () => {
+    resetDateRange();
+    render();
+  });
+
   updateSaveButton();
 
   loadSettings()
-    .then(() => loadBoard())
+    .then(() => {
+      resetDateRange();
+      return loadBoard();
+    })
     .catch((e) => {
       boardEl.innerHTML = `<div class="error-banner">${escapeHtml(String(e.message || e))}</div>`;
       setStatus("", true);
