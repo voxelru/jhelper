@@ -34,8 +34,7 @@ from pending_changes import (
     reset_history,
     undo_last,
     upsert_pending_assignee,
-    upsert_pending_dates,
-    upsert_pending_effort,
+    upsert_pending_placement,
     write_pending,
 )
 from settings import date_field_cfg, effort_cfg, horizon_cfg, load_settings, priorities_cfg
@@ -147,46 +146,31 @@ def api_pending_post():
     return jsonify({"changes": pending_list(changes), "count": len(changes)})
 
 
-@app.route("/api/pending/effort", methods=["POST"])
-def api_pending_effort_post():
+@app.route("/api/pending/placement", methods=["POST"])
+def api_pending_placement_post():
+    """Положение задачи на доске: дата начала, дата окончания и продолжительность.
+
+    Любое перемещение или изменение размера присылает все три параметра сразу —
+    частичных обновлений (только даты или только трудозатраты) больше нет.
+    """
     data = request.get_json(silent=True) or {}
     key = str(data.get("key") or "").strip()
     effort_days = data.get("effortDays")
-    original_effort_days = data.get("originalEffortDays")
     if not key or effort_days is None:
-        return jsonify({"error": "Нужны key и effortDays"}), 400
+        return jsonify({"error": "Нужны key, startDate, endDate и effortDays"}), 400
+    original_effort = data.get("originalEffortDays")
     try:
-        changes = upsert_pending_effort(
+        changes = upsert_pending_placement(
             ROOT,
             key,
-            float(effort_days),
-            original_effort_days=float(original_effort_days) if original_effort_days is not None else None,
-        )
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    return jsonify({"changes": pending_list(changes), "count": len(changes)})
-
-
-@app.route("/api/pending/dates", methods=["POST"])
-def api_pending_dates_post():
-    data = request.get_json(silent=True) or {}
-    key = str(data.get("key") or "").strip()
-    has_start = "startDate" in data
-    has_end = "endDate" in data
-    if not key or (not has_start and not has_end):
-        return jsonify({"error": "Нужны key и startDate и/или endDate"}), 400
-    try:
-        changes = upsert_pending_dates(
-            ROOT,
-            key,
-            has_start=has_start,
             start_date=data.get("startDate"),
-            original_start_date=data.get("originalStartDate"),
-            has_end=has_end,
             end_date=data.get("endDate"),
+            effort_days=float(effort_days),
+            original_start_date=data.get("originalStartDate"),
             original_end_date=data.get("originalEndDate"),
+            original_effort_days=float(original_effort) if original_effort is not None else None,
         )
-    except ValueError as e:
+    except (TypeError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
     return jsonify({"changes": pending_list(changes), "count": len(changes)})
 
@@ -235,6 +219,11 @@ def api_save():
                 remaining_item["assigneeId"] = item["assigneeId"]
                 remaining_item["assigneeName"] = item.get("assigneeName", item["assigneeId"])
 
+        # Положение задачи — единая запись из трёх параметров: сохраняем их
+        # вместе и вместе же возвращаем в pending, если хоть одна часть не ушла.
+        has_placement = "effortDays" in item or "startDate" in item or "endDate" in item
+        placement_failed = False
+
         if "effortDays" in item:
             try:
                 raw = effort_days_to_jira_raw(item["effortDays"], effort_type, s)
@@ -242,27 +231,25 @@ def api_save():
                 saved += 1
             except Exception as e:
                 failed.append({"key": key, "field": "effort", "error": str(e)})
-                remaining_item["effortDays"] = item["effortDays"]
+                placement_failed = True
 
-        if "startDate" in item:
+        # Дата без настроенного jira_field_id — чисто расчётная: она есть в
+        # pending-записи для полноты, но писать её в Jira некуда, это не ошибка.
+        for field_name, field_id in (("startDate", start_fid), ("endDate", end_fid)):
+            value = item.get(field_name)
+            if field_name not in item or not value or not field_id:
+                continue
             try:
-                if not start_fid:
-                    raise RuntimeError("Не задан fields.start_date.jira_field_id")
-                update_issue_date(base, session, key, start_fid, item["startDate"])
+                update_issue_date(base, session, key, field_id, value)
                 saved += 1
             except Exception as e:
-                failed.append({"key": key, "field": "startDate", "error": str(e)})
-                remaining_item["startDate"] = item["startDate"]
+                failed.append({"key": key, "field": field_name, "error": str(e)})
+                placement_failed = True
 
-        if "endDate" in item:
-            try:
-                if not end_fid:
-                    raise RuntimeError("Не задан fields.end_date.jira_field_id")
-                update_issue_date(base, session, key, end_fid, item["endDate"])
-                saved += 1
-            except Exception as e:
-                failed.append({"key": key, "field": "endDate", "error": str(e)})
-                remaining_item["endDate"] = item["endDate"]
+        if has_placement and placement_failed:
+            for field_name in ("startDate", "endDate", "effortDays"):
+                if field_name in item:
+                    remaining_item[field_name] = item[field_name]
 
         if remaining_item:
             remaining[key] = remaining_item

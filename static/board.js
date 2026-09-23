@@ -1,8 +1,11 @@
 /**
  * Доска: рабочие дни в шапке, строки — сотрудники,
  * блоки — 3 строки (ключ / title / заказчик), подсказка при наведении.
- * Смена исполнителя (drag-and-drop) и изменение трудозатрат (растягивание
- * прямоугольника) копятся до нажатия «Сохранить в Jira».
+ * Смена исполнителя (drag-and-drop между строками) и положение задачи
+ * (перетаскивание по датам, растягивание прямоугольника) копятся до нажатия
+ * «Сохранить в Jira». Любое перемещение или изменение размера пишет в файл
+ * изменений сразу три параметра: дату начала, дату окончания и
+ * продолжительность.
  */
 
 (function () {
@@ -166,11 +169,42 @@
     return Math.min(maxOffset, Math.max(0, Math.round(raw)));
   }
 
-  function computeDatesForOffset(task, offsetDays) {
+  function datesForRange(offsetDays, durationDays) {
     return {
       startIso: boardDateAtOffset(offsetDays, false),
-      endIso: boardDateAtOffset(offsetDays + task.durationDays, true),
+      endIso: boardDateAtOffset(offsetDays + durationDays, true),
     };
+  }
+
+  /**
+   * Текущее положение задачи на доске тремя параметрами: дата начала, дата
+   * окончания и продолжительность (ширина прямоугольника в рабочих днях).
+   * Это единственный источник значений, которые уходят в файл изменений.
+   */
+  function taskPlacement(task) {
+    const duration = Math.round(Number(task.durationDays) * 10000) / 10000;
+    const { startIso, endIso } = datesForRange(task.startOffsetDays, duration);
+    return { startIso, endIso, durationDays: duration };
+  }
+
+  /**
+   * Ставит задачу в точный диапазон: от offsetDays на durationDays рабочих
+   * дней. Единая точка для перетаскивания и растягивания — после неё все три
+   * параметра задачи (дата начала, дата окончания, продолжительность)
+   * согласованы между собой и с тем, что уйдёт в файл изменений.
+   */
+  function applyPlacement(task, offsetDays, durationDays) {
+    const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
+    const duration = Math.max(minDays, Math.round(Number(durationDays) * 10000) / 10000);
+    task.startOffsetDays = Math.round(Number(offsetDays) * 10000) / 10000;
+    task.durationDays = duration;
+    task.effortDays = duration;
+    task.isComplete = true;
+    task.dateRangeStartOffsetDays = task.startOffsetDays;
+    task.dateRangeDurationDays = duration;
+    const { startIso, endIso } = taskPlacement(task);
+    task.jiraStartDate = startIso;
+    task.jiraEndDate = endIso;
   }
 
   function formatDateRu(iso) {
@@ -239,8 +273,7 @@
       : escapeHtml(task.key);
     const pendingParts = [];
     if (task.pendingAssignee) pendingParts.push("исполнитель");
-    if (task.pendingEffort) pendingParts.push("трудозатраты");
-    if (task.pendingDates) pendingParts.push("даты");
+    if (task.pendingPlacement) pendingParts.push("даты и продолжительность");
     const pendingRow = pendingParts.length
       ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">${escapeHtml(pendingParts.join(", "))} не сохранены в Jira</span></div>`
       : "";
@@ -299,8 +332,11 @@
 
       const startX = e.clientX;
       const startDuration = task.durationDays;
+      // Левый край при растягивании остаётся на месте: задача занимает точный
+      // диапазон от него на новую продолжительность.
+      const anchorOffset = task.startOffsetDays;
       const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
-      const wasComplete = task.isComplete;
+      let changed = false;
       resizeState = { task, row };
 
       const onMove = (ev) => {
@@ -308,14 +344,8 @@
         let next = Math.round((startDuration + deltaDays) * 4) / 4;
         next = Math.max(minDays, next);
         if (next !== task.durationDays) {
-          // Трудозатраты обновляем всегда — растягивание задаёт новую
-          // длительность независимо от того, есть ли у задачи точные даты.
-          task.effortDays = next;
-          if (wasComplete) {
-            // Задача уже занимает строго свой диапазон дат — растягивание
-            // ещё и двигает дату окончания, начало остаётся на месте.
-            task.dateRangeDurationDays = next;
-          }
+          applyPlacement(task, anchorOffset, next);
+          changed = true;
           packRow(row.tasks);
           render();
         }
@@ -325,16 +355,12 @@
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
         resizeState = null;
-
-        const pending = [recordPendingEffort(task)];
-        if (wasComplete) {
-          const { startIso, endIso } = computeDatesForOffset(task, task.startOffsetDays);
-          if (dateFieldWritable("startDate")) task.jiraStartDate = startIso;
-          if (dateFieldWritable("endDate")) task.jiraEndDate = endIso;
-          pending.push(recordPendingDates(task, startIso, endIso));
+        if (!changed) {
+          render();
+          return;
         }
 
-        Promise.all(pending)
+        recordPendingPlacement(task)
           .then(() => {
             setStatus(
               pendingCount
@@ -411,7 +437,7 @@
         const isResizing = !!(resizeState && resizeState.task === t);
         el.className =
           "task" +
-          (t.pendingAssignee || t.pendingEffort || t.pendingDates ? " pending" : "") +
+          (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
           (isResizing ? " resizing" : "");
         el.draggable = true;
         el.dataset.issueKey = t.key;
@@ -480,56 +506,39 @@
     return data;
   }
 
-  async function recordPendingEffort(task) {
-    const r = await fetch("/api/pending/effort", {
+  /**
+   * Пишет в файл изменений положение задачи — всегда все три параметра сразу:
+   * дата начала, дата окончания и продолжительность. Если задача вернулась
+   * ровно к исходным значениям из Jira, сервер удаляет запись целиком.
+   */
+  async function recordPendingPlacement(task) {
+    const { startIso, endIso, durationDays } = taskPlacement(task);
+    const originalStart = task.originalJiraStartDate || null;
+    const originalEnd = task.originalJiraEndDate || null;
+    const originalEffort = task.originalEffortDays;
+
+    const r = await fetch("/api/pending/placement", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         key: task.key,
-        effortDays: task.effortDays,
-        originalEffortDays: task.originalEffortDays,
+        startDate: startIso,
+        endDate: endIso,
+        effortDays: durationDays,
+        originalStartDate: originalStart,
+        originalEndDate: originalEnd,
+        originalEffortDays: originalEffort,
       }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
-    task.pendingEffort = task.effortDays !== task.originalEffortDays;
-    pendingCount = data.count || 0;
-    updateSaveButton();
-    render();
-    return data;
-  }
 
-  function dateFieldWritable(name) {
-    const fields = (settings && settings.fields) || {};
-    const cfg = fields[name];
-    return !!(cfg && cfg.jiraFieldId);
-  }
-
-  async function recordPendingDates(task, startIso, endIso) {
-    const startWritable = dateFieldWritable("startDate");
-    const endWritable = dateFieldWritable("endDate");
-    if (!startWritable && !endWritable) return null;
-
-    const payload = { key: task.key };
-    if (startWritable) {
-      payload.startDate = startIso;
-      payload.originalStartDate = task.originalJiraStartDate || null;
-    }
-    if (endWritable) {
-      payload.endDate = endIso;
-      payload.originalEndDate = task.originalJiraEndDate || null;
-    }
-
-    const r = await fetch("/api/pending/dates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.statusText);
-    task.pendingDates =
-      (startWritable && startIso !== task.originalJiraStartDate) ||
-      (endWritable && endIso !== task.originalJiraEndDate);
+    // Раскладка строки могла сдвинуть задачу вправо от точки отпускания —
+    // храним в задаче ровно то, что записано в файл изменений.
+    task.jiraStartDate = startIso;
+    task.jiraEndDate = endIso;
+    task.pendingPlacement =
+      startIso !== originalStart || endIso !== originalEnd || durationDays !== originalEffort;
     pendingCount = data.count || 0;
     updateSaveButton();
     render();
@@ -577,7 +586,6 @@
       if (!dragState) return;
       const { task: draggedTask, sourceRow } = dragState;
       const prevAssigneeId = draggedTask.assigneeId;
-      const prevStart = draggedTask.isComplete ? draggedTask.dateRangeStartOffsetDays : null;
 
       const targetRow = row;
       const dropOffset = offsetDaysFromClientX(rowEl, e.clientX);
@@ -591,36 +599,21 @@
         originalAssignee != null && String(originalAssignee) !== String(targetRow.assigneeId);
 
       // Перетаскивание — явное указание позиции: задача занимает диапазон от
-      // dropOffset и на текущую ширину вперёд, как будто в Jira назначены
-      // обе даты, и перестаёт зависеть от расчётной очереди.
-      const { startIso, endIso } = computeDatesForOffset(draggedTask, dropOffset);
-      draggedTask.isComplete = true;
-      draggedTask.dateRangeStartOffsetDays = dropOffset;
-      draggedTask.dateRangeDurationDays = draggedTask.durationDays;
-      if (dateFieldWritable("startDate")) draggedTask.jiraStartDate = startIso;
-      if (dateFieldWritable("endDate")) draggedTask.jiraEndDate = endIso;
+      // dropOffset и на текущую ширину вперёд и перестаёт зависеть от
+      // расчётной очереди.
+      applyPlacement(draggedTask, dropOffset, draggedTask.durationDays);
 
       packRow(targetRow.tasks);
       if (sourceRow !== targetRow) packRow(sourceRow.tasks);
       render();
 
+      // Положение пишем всегда — перемещение задаёт все три параметра сразу
+      // (дата начала, дата окончания, продолжительность). Записи идут строго
+      // по очереди: сервер читает и перезаписывает один и тот же файл.
       const assigneeChanged = String(prevAssigneeId) !== String(targetRow.assigneeId);
-      const datesChanged = prevStart !== dropOffset;
-
-      const persistPromises = [];
-      if (assigneeChanged) persistPromises.push(recordPendingAssignee(draggedTask).then(() => true));
-      if (datesChanged) persistPromises.push(recordPendingDates(draggedTask, startIso, endIso).then((d) => d !== null));
-
-      if (!persistPromises.length) {
-        setStatus("Положение не изменилось.");
-        return;
-      }
-      Promise.all(persistPromises)
-        .then((results) => {
-          if (!results.some(Boolean)) {
-            setStatus("Положение изменено только в интерфейсе (даты в Jira не настроены для записи).");
-            return;
-          }
+      recordPendingPlacement(draggedTask)
+        .then(() => (assigneeChanged ? recordPendingAssignee(draggedTask) : null))
+        .then(() => {
           setStatus(
             pendingCount
               ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`

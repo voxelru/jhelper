@@ -381,11 +381,10 @@ def normalize_issues(raw_issues: list[dict[str, Any]], settings: dict[str, Any])
                 "originalAssigneeId": assignee_id,
                 "originalAssigneeName": assignee_name,
                 "pendingAssignee": False,
-                "pendingEffort": False,
+                "pendingPlacement": False,
                 "effortDays": round(effort_days, 4),
                 "originalEffortDays": round(effort_days, 4),
                 "hasEffort": has_effort,
-                "pendingDates": False,
                 "color": color,
                 "jiraStartDate": jira_start,
                 "jiraEndDate": jira_end,
@@ -461,7 +460,10 @@ def apply_pending_changes(
     pending: dict[str, dict[str, Any]],
     settings: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Накладывает локальные несохранённые изменения (исполнитель, трудозатраты, даты) на задачи."""
+    """Накладывает локальные несохранённые изменения на задачи.
+
+    Это исполнитель и положение задачи (дата начала + дата окончания +
+    продолжительность), которое всегда лежит в pending целиком."""
     planning_start, _ = planning_bounds(settings)
     for t in tasks:
         key = t.get("key")
@@ -474,25 +476,24 @@ def apply_pending_changes(
         else:
             t["pendingAssignee"] = False
 
-        has_effort_override = bool(item and "effortDays" in item)
-        if has_effort_override:
-            t["effortDays"] = float(item["effortDays"])
-            t["pendingEffort"] = True
-        else:
-            t["pendingEffort"] = False
-
-        has_dates = bool(item and ("startDate" in item or "endDate" in item))
-        if has_dates:
-            if "startDate" in item:
+        # Положение задачи лежит в pending одной записью из трёх параметров:
+        # дата начала, дата окончания и продолжительность (effortDays).
+        has_placement = bool(
+            item and ("startDate" in item or "endDate" in item or "effortDays" in item)
+        )
+        if has_placement:
+            if item.get("effortDays") is not None:
+                t["effortDays"] = float(item["effortDays"])
+            if item.get("startDate"):
                 t["jiraStartDate"] = item["startDate"]
-            if "endDate" in item:
+            if item.get("endDate"):
                 t["jiraEndDate"] = item["endDate"]
-        t["pendingDates"] = has_dates
+        t["pendingPlacement"] = has_placement
 
         # Явное перетаскивание/растягивание задачи само по себе даёт достаточно
         # данных о её длительности — не требуем отдельно заполненных
         # «трудозатрат» в Jira, чтобы задача считалась полностью заполненной.
-        has_effort_now = bool(t.get("hasEffort")) or has_effort_override or has_dates
+        has_effort_now = bool(t.get("hasEffort")) or has_placement
         t["isComplete"] = bool(t.get("jiraStartDate")) and bool(t.get("jiraEndDate")) and has_effort_now
         date_range = (
             compute_date_range(planning_start, t.get("jiraStartDate"), t.get("jiraEndDate"))

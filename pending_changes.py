@@ -1,8 +1,9 @@
-"""Локальный файл с несохранёнными изменениями (исполнитель, трудозатраты, даты).
+"""Локальный файл с несохранёнными изменениями (исполнитель и положение задачи).
 
-Изменения копятся здесь при взаимодействии с доской (drag-and-drop смены
-исполнителя/даты, изменение ширины прямоугольника) и уходят в Jira только по
-кнопке «Сохранить в Jira». Каждое реальное изменение состояния сохраняет
+Изменения копятся здесь при взаимодействии с доской и уходят в Jira только по
+кнопке «Сохранить в Jira». Положение задачи всегда описывается тремя
+параметрами сразу (`startDate`, `endDate`, `effortDays`): и перетаскивание, и
+изменение ширины прямоугольника пишут полный набор, см. `upsert_pending_placement`. Каждое реальное изменение состояния сохраняет
 предыдущий снимок в историю (`pending_changes_history.json`), что позволяет
 отменить последнее действие (`undo_last`) или все несохранённые изменения
 разом (`clear_pending`).
@@ -80,7 +81,10 @@ def undo_last(root: Path) -> dict[str, dict[str, Any]]:
 
 
 def read_pending(root: Path) -> dict[str, dict[str, Any]]:
-    """Возвращает {issue_key: {assigneeId?, assigneeName?, effortDays?}}."""
+    """Возвращает {issue_key: {assigneeId?, assigneeName?, startDate?, endDate?, effortDays?}}.
+
+    Три параметра положения (startDate/endDate/effortDays) всегда пишутся и
+    удаляются вместе."""
     path = pending_path(root)
     if not path.exists():
         return {}
@@ -139,67 +143,69 @@ def upsert_pending_assignee(
     return _commit(root, previous, changes)
 
 
-def upsert_pending_effort(
+def _norm_effort(value: Any) -> float:
+    return round(float(value), 4)
+
+
+def _placement_changed(
+    start_date: str | None,
+    end_date: str | None,
+    effort_days: float,
+    original_start_date: str | None,
+    original_end_date: str | None,
+    original_effort_days: float | None,
+) -> bool:
+    if (start_date or None) != (original_start_date or None):
+        return True
+    if (end_date or None) != (original_end_date or None):
+        return True
+    if original_effort_days is None:
+        return True
+    return _norm_effort(original_effort_days) != _norm_effort(effort_days)
+
+
+def upsert_pending_placement(
     root: Path,
     issue_key: str,
-    effort_days: float,
     *,
+    start_date: str | None,
+    end_date: str | None,
+    effort_days: float,
+    original_start_date: str | None = None,
+    original_end_date: str | None = None,
     original_effort_days: float | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Добавляет/обновляет плановые трудозатраты; если вернулись к исходным — убирает их."""
-    changes = read_pending(root)
-    previous = copy.deepcopy(changes)
-    key = (issue_key or "").strip()
-    if not key:
-        raise ValueError("Нужен issue_key")
+    """Записывает положение задачи на доске тремя параметрами сразу.
 
-    item = dict(changes.get(key) or {})
-    if original_effort_days is not None and round(float(original_effort_days), 4) == round(float(effort_days), 4):
-        item.pop("effortDays", None)
-    else:
-        item["effortDays"] = round(float(effort_days), 4)
-
-    if item:
-        changes[key] = item
-    else:
-        changes.pop(key, None)
-    return _commit(root, previous, changes)
-
-
-def upsert_pending_dates(
-    root: Path,
-    issue_key: str,
-    *,
-    has_start: bool = False,
-    start_date: str | None = None,
-    original_start_date: str | None = None,
-    has_end: bool = False,
-    end_date: str | None = None,
-    original_end_date: str | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Добавляет/обновляет дату начала и/или окончания; если вернулись к исходной — убирает её.
-
-    has_start/has_end различают «поле не прислали» (не трогаем) от «прислали пустое значение».
+    Любое перемещение или изменение размера прямоугольника описывается одной
+    записью: дата начала, дата окончания и продолжительность (`effortDays`).
+    Частичных записей не бывает — либо в pending лежат все три значения, либо
+    (если задача вернулась ровно к исходному положению) ни одного.
     """
     changes = read_pending(root)
     previous = copy.deepcopy(changes)
     key = (issue_key or "").strip()
     if not key:
         raise ValueError("Нужен issue_key")
+    effort = _norm_effort(effort_days)
 
     item = dict(changes.get(key) or {})
-
-    if has_start:
-        if start_date and start_date != original_start_date:
-            item["startDate"] = start_date
-        else:
-            item.pop("startDate", None)
-
-    if has_end:
-        if end_date and end_date != original_end_date:
-            item["endDate"] = end_date
-        else:
-            item.pop("endDate", None)
+    changed = _placement_changed(
+        start_date,
+        end_date,
+        effort,
+        original_start_date,
+        original_end_date,
+        original_effort_days,
+    )
+    if changed:
+        item["startDate"] = start_date or None
+        item["endDate"] = end_date or None
+        item["effortDays"] = effort
+    else:
+        item.pop("startDate", None)
+        item.pop("endDate", None)
+        item.pop("effortDays", None)
 
     if item:
         changes[key] = item
