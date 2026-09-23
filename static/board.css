@@ -221,12 +221,32 @@ body {
   padding: 0 10px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 0.85rem;
   font-weight: 500;
   background: var(--bg-row);
   position: sticky;
   left: 0;
   z-index: 2;
+}
+
+.row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Суммарная оценка задач строки в текущих фильтрах. */
+.row-total {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #455a64;
+  background: #eceff1;
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
 }
 
 .row-track {

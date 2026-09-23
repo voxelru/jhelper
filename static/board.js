@@ -525,9 +525,23 @@
       rowEl.className = "board-row";
       rowEl.dataset.assigneeId = row.assigneeId || "";
 
+      // Рядом с сотрудником — суммарная оценка задач, попавших в текущие
+      // фильтры (спринт, бизнес-партнёр, поиск, окно дат).
+      const rowEffort = visibleTasks.reduce((sum, { task }) => {
+        const n = Number(task.effortDays);
+        return sum + (Number.isFinite(n) ? n : 0);
+      }, 0);
+
       const label = document.createElement("div");
       label.className = "row-label";
-      label.textContent = row.assigneeName || "—";
+      const nameEl = document.createElement("span");
+      nameEl.className = "row-name";
+      nameEl.textContent = row.assigneeName || "—";
+      const totalEl = document.createElement("span");
+      totalEl.className = "row-total";
+      totalEl.textContent = formatEffort(rowEffort);
+      totalEl.title = `Суммарная оценка показанных задач (${visibleTasks.length}) с учётом фильтров`;
+      label.append(nameEl, totalEl);
       rowEl.appendChild(label);
 
       const track = document.createElement("div");
