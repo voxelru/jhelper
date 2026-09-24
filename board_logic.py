@@ -13,6 +13,7 @@ from settings import (
     date_field_cfg,
     effort_cfg,
     horizon_cfg,
+    labels_field_id,
     priorities_cfg,
     sprint_field_id,
 )
@@ -295,6 +296,30 @@ def parse_sprint_value(raw: Any) -> str | None:
     return text
 
 
+def parse_labels(raw: Any) -> list[str]:
+    """Метки задачи списком строк.
+
+    Системное поле Jira `labels` приходит списком строк, кастомные поля —
+    списком объектов или строкой через запятую; поддерживаем все варианты.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        items: list[Any] = list(raw)
+    elif isinstance(raw, str):
+        items = re.split(r"[,;]", raw)
+    else:
+        items = [raw]
+
+    out: list[str] = []
+    for item in items:
+        text = format_display_value(item)
+        text = text.strip() if text else None
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def _is_positive_number(raw: Any) -> bool:
     try:
         return raw is not None and float(raw) > 0
@@ -350,6 +375,10 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
     if sprint_fid:
         fields.append(sprint_fid)
 
+    labels_fid = labels_field_id(settings)
+    if labels_fid:
+        fields.append(labels_fid)
+
     for name in ("start_date", "end_date"):
         fid = date_field_cfg(settings, name)
         if fid:
@@ -369,6 +398,7 @@ def fields_public_cfg(s: dict[str, Any]) -> dict[str, Any]:
     return {
         "customer": {"jiraFieldId": customer_field_id(s)},
         "sprint": {"jiraFieldId": sprint_field_id(s)},
+        "labels": {"jiraFieldId": labels_field_id(s)},
         "startDate": {"jiraFieldId": date_field_cfg(s, "start_date")},
         "endDate": {"jiraFieldId": date_field_cfg(s, "end_date")},
     }
@@ -387,6 +417,7 @@ def normalize_issues(
     order, colors = priorities_cfg(settings)
     cust_fid = customer_field_id(settings)
     sprint_fid = sprint_field_id(settings)
+    labels_fid = labels_field_id(settings)
     start_fid = date_field_cfg(settings, "start_date")
     end_fid = date_field_cfg(settings, "end_date")
     if planning_start is None:
@@ -411,6 +442,7 @@ def normalize_issues(
         color = colors.get(priority_name) or colors.get("default") or "#78909c"
         customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
         sprint = parse_sprint_value(fields.get(sprint_fid)) if sprint_fid else None
+        labels = parse_labels(fields.get(labels_fid)) if labels_fid else []
 
         jira_start = parse_jira_date(fields.get(start_fid)) if start_fid else None
         jira_end = parse_jira_date(fields.get(end_fid)) if end_fid else None
@@ -437,6 +469,7 @@ def normalize_issues(
                 "status": status_name,
                 "customer": customer,
                 "sprint": sprint,
+                "labels": labels,
                 "priority": priority_name,
                 "assigneeId": assignee_id,
                 "assigneeName": assignee_name,

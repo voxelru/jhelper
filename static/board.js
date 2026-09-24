@@ -17,6 +17,7 @@
   const btnSave = document.getElementById("btn-save");
   const sprintFilterEl = document.getElementById("sprint-filter");
   const customerFilterEl = document.getElementById("customer-filter");
+  const labelFilterEl = document.getElementById("label-filter");
   const searchInputEl = document.getElementById("search-input");
   const rangeFromEl = document.getElementById("range-from");
   const rangeToEl = document.getElementById("range-to");
@@ -27,8 +28,13 @@
   let model = null;
   let ppd = 36;
   let pendingCount = 0;
+  // Значение пункта «Не определено»: совпасть с настоящим значением поля Jira
+  // оно не может, поэтому отличить «не выбрано» от «пусто» получается однозначно.
+  const UNSET_VALUE = "\u0000не-определено";
+
   let selectedSprint = "";
   let selectedCustomer = "";
+  let selectedLabel = "";
   let searchQuery = "";
   /** Фильтр по датам: какие календарные дни горизонта показывать на шкале (ISO, включительно). */
   let rangeFrom = "";
@@ -173,13 +179,21 @@
     allOpt.value = "";
     allOpt.textContent = allLabel;
     selectEl.appendChild(allOpt);
+
+    // Отдельный пункт для задач, у которых поле не заполнено.
+    const unsetOpt = document.createElement("option");
+    unsetOpt.value = UNSET_VALUE;
+    unsetOpt.textContent = "Не определено";
+    selectEl.appendChild(unsetOpt);
+
     for (const name of values) {
       const opt = document.createElement("option");
       opt.value = name;
       opt.textContent = name;
       selectEl.appendChild(opt);
     }
-    const next = values.includes(currentValue) ? currentValue : "";
+    const next =
+      currentValue === UNSET_VALUE || values.includes(currentValue) ? currentValue : "";
     selectEl.value = next;
     return next;
   }
@@ -192,6 +206,11 @@
   function populateCustomerFilter() {
     const customers = (model && model.meta && model.meta.customers) || [];
     selectedCustomer = populateFilterSelect(customerFilterEl, customers, selectedCustomer, "Все бизнес-партнёры");
+  }
+
+  function populateLabelFilter() {
+    const labels = (model && model.meta && model.meta.labels) || [];
+    selectedLabel = populateFilterSelect(labelFilterEl, labels, selectedLabel, "Все метки");
   }
 
   function syncRangeInputs() {
@@ -227,9 +246,25 @@
     syncRangeInputs();
   }
 
+  /** Совпадение значения поля задачи с выбранным пунктом фильтра. */
+  function matchesValueFilter(selected, value) {
+    if (!selected) return true;
+    if (selected === UNSET_VALUE) return !value;
+    return value === selected;
+  }
+
+  /** То же для поля-списка (метки): «Не определено» — список пуст. */
+  function matchesListFilter(selected, values) {
+    if (!selected) return true;
+    const list = Array.isArray(values) ? values : [];
+    if (selected === UNSET_VALUE) return !list.length;
+    return list.includes(selected);
+  }
+
   function taskMatchesFilters(t) {
-    if (selectedSprint && t.sprint !== selectedSprint) return false;
-    if (selectedCustomer && t.customer !== selectedCustomer) return false;
+    if (!matchesValueFilter(selectedSprint, t.sprint)) return false;
+    if (!matchesValueFilter(selectedCustomer, t.customer)) return false;
+    if (!matchesListFilter(selectedLabel, t.labels)) return false;
     if (searchQuery) {
       const key = (t.key || "").toLowerCase();
       const summary = (t.summary || "").toLowerCase();
@@ -785,6 +820,7 @@
     updateSaveButton();
     populateSprintFilter();
     populateCustomerFilter();
+    populateLabelFilter();
     rebuildAllPacks();
     render();
     const base = `Задач: ${countTasks(model)}`;
@@ -898,6 +934,11 @@
 
   customerFilterEl.addEventListener("change", () => {
     selectedCustomer = customerFilterEl.value;
+    render();
+  });
+
+  labelFilterEl.addEventListener("change", () => {
+    selectedLabel = labelFilterEl.value;
     render();
   });
 

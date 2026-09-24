@@ -135,6 +135,7 @@ def api_board():
     tasks = apply_pending_changes(tasks, pending, s, start)
     sprints = sorted({t["sprint"] for t in tasks if t.get("sprint")})
     customers = sorted({t["customer"] for t in tasks if t.get("customer")})
+    labels = sorted({label for t in tasks for label in (t.get("labels") or [])})
     board = build_rows(tasks, order, today_offset)
     board["meta"] = {
         "planningStart": start.isoformat(),
@@ -148,6 +149,7 @@ def api_board():
         "pendingCount": len(pending),
         "sprints": sprints,
         "customers": customers,
+        "labels": labels,
     }
     return jsonify(board)
 

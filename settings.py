@@ -72,6 +72,17 @@ def customer_field_id(s: dict[str, Any]) -> str | None:
     return fid
 
 
+def labels_field_id(s: dict[str, Any]) -> str | None:
+    """ID поля Jira с метками: fields.labels.jira_field_id.
+
+    Обычно это системное поле `labels`, но можно указать любое кастомное —
+    значение используется для выпадающего фильтра по меткам."""
+    fid = _field_cfg(s, "labels").get("jira_field_id")
+    if fid is not None:
+        fid = str(fid).strip() or None
+    return fid
+
+
 def sprint_field_id(s: dict[str, Any]) -> str | None:
     """ID поля Jira со спринтом: fields.sprint.jira_field_id."""
     fid = _field_cfg(s, "sprint").get("jira_field_id")
