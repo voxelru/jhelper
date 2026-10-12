@@ -59,6 +59,30 @@
   tooltipEl.hidden = true;
   document.body.appendChild(tooltipEl);
 
+  // Окно задачи: открывается по клику на прямоугольник, в нём правятся даты и
+  // трудозатраты, а номер задачи — ссылка в Jira.
+  const dialogEl = document.createElement("dialog");
+  dialogEl.className = "task-dialog";
+  dialogEl.innerHTML = `
+    <form method="dialog" novalidate>
+      <div class="td-head"><span class="td-key"></span><span class="td-status"></span></div>
+      <div class="td-summary"></div>
+      <label class="td-field"><span>Дата начала</span><input type="date" name="start" required /></label>
+      <label class="td-field"><span>Дата окончания</span><input type="date" name="end" required /></label>
+      <label class="td-field"><span>Трудозатраты, md</span><input type="number" name="effort" min="0.25" step="0.25" required /></label>
+      <div class="td-field"><span>Бизнес-партнёр</span><span class="td-customer"></span></div>
+      <div class="td-hint"></div>
+      <div class="td-error" role="alert"></div>
+      <div class="td-actions">
+        <button type="button" class="td-cancel">Отмена</button>
+        <button type="submit" class="td-apply">Применить</button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(dialogEl);
+  /** @type {{ task: any, row: any, initial: string } | null} */
+  let dialogState = null;
+
   function setStatus(text, isError) {
     statusEl.textContent = text || "";
     statusEl.style.color = isError ? "#c62828" : "#546e7a";
@@ -556,14 +580,141 @@
     });
   }
 
-  function wireTaskOpenInJira(el, task) {
+  function wireTaskDialog(el, task, row) {
     el.addEventListener("click", (e) => {
-      if (e.target.closest(".task-resize") || e.target.closest("a.task-key")) return;
-      const base = ((settings && settings.jiraBaseUrl) || "").replace(/\/$/, "");
-      if (!base) return;
-      window.open(`${base}/browse/${encodeURIComponent(task.key)}`, "_blank", "noopener,noreferrer");
+      if (e.target.closest(".task-resize, .task-resize-effort")) return;
+      openTaskDialog(task, row);
     });
   }
+
+  function isoAddDays(iso, days) {
+    const d = new Date(`${iso}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  function isWeekend(iso) {
+    const day = new Date(`${iso}T00:00:00Z`).getUTCDay();
+    return day === 0 || day === 6;
+  }
+
+  /** Ближайший рабочий день: вперёд (step = 1) или назад (step = -1). */
+  function shiftToWorkday(iso, step) {
+    let out = iso;
+    while (isWeekend(out)) out = isoAddDays(out, step);
+    return out;
+  }
+
+  /**
+   * Номер рабочего дня даты на шкале (в тех же единицах, что startOffsetDays).
+   * Для даты вне загруженного окна считается по календарю и выходит за его
+   * границы — такую задачу доска покажет обрезанной или не покажет вовсе.
+   */
+  function offsetOfDate(iso) {
+    const dates = (settings && settings.workingDates) || [];
+    const index = dates.indexOf(iso);
+    if (index >= 0 || !dates.length) return Math.max(0, index);
+    let offset = 0;
+    if (iso < dates[0]) {
+      for (let d = iso; d < dates[0]; d = isoAddDays(d, 1)) if (!isWeekend(d)) offset--;
+      return offset;
+    }
+    const last = dates[dates.length - 1];
+    for (let d = last; d < iso; d = isoAddDays(d, 1)) if (!isWeekend(d)) offset++;
+    return dates.length - 1 + offset;
+  }
+
+  /** Значения формы окна задачи, приведённые к рабочим дням и четверти дня. */
+  function readDialogValues() {
+    const form = dialogEl.querySelector("form");
+    const startRaw = form.elements.start.value;
+    const endRaw = form.elements.end.value;
+    const effort = Number(form.elements.effort.value);
+    if (!startRaw || !endRaw) return { error: "Укажите дату начала и дату окончания." };
+    if (!Number.isFinite(effort) || effort <= 0) return { error: "Трудозатраты должны быть больше нуля." };
+    const startIso = shiftToWorkday(startRaw, 1);
+    const endIso = shiftToWorkday(endRaw, -1);
+    if (endIso < startIso) return { error: "Дата окончания раньше даты начала, либо между ними нет рабочих дней." };
+    const startOffset = offsetOfDate(startIso);
+    const durationDays = offsetOfDate(endIso) - startOffset + 1;
+    return { startIso, endIso, startOffset, durationDays, effortDays: roundEffort(effort) };
+  }
+
+  function updateDialogHint() {
+    const values = readDialogValues();
+    const hintEl = dialogEl.querySelector(".td-hint");
+    dialogEl.querySelector(".td-error").textContent = "";
+    if (values.error) {
+      hintEl.textContent = "";
+      return;
+    }
+    const load = Math.round((values.effortDays / values.durationDays) * 100);
+    hintEl.textContent =
+      `${formatDateRu(values.startIso)} — ${formatDateRu(values.endIso)}: ${values.durationDays} раб. дн., ` +
+      `${formatEffort(values.effortDays)}, загрузка ${load}%`;
+  }
+
+  function openTaskDialog(task, row) {
+    hideTooltip();
+    const form = dialogEl.querySelector("form");
+    const base = ((settings && settings.jiraBaseUrl) || "").replace(/\/$/, "");
+    dialogEl.querySelector(".td-key").innerHTML = base
+      ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
+      : escapeHtml(task.key);
+    dialogEl.querySelector(".td-status").textContent = task.status ? `[${task.status}]` : "";
+    dialogEl.querySelector(".td-summary").textContent = task.summary || "";
+    dialogEl.querySelector(".td-customer").textContent = task.customer || "—";
+
+    const { startIso, endIso } = resolveTaskDates(task);
+    form.elements.start.value = startIso || "";
+    form.elements.end.value = endIso || "";
+    form.elements.effort.value = String(roundEffort(task.effortDays));
+    dialogState = { task, row, initial: JSON.stringify(readDialogValues()) };
+    updateDialogHint();
+    dialogEl.showModal();
+    form.elements.effort.select();
+  }
+
+  function submitTaskDialog() {
+    if (!dialogState) return;
+    const { task, row, initial } = dialogState;
+    const values = readDialogValues();
+    if (values.error) {
+      dialogEl.querySelector(".td-error").textContent = values.error;
+      return;
+    }
+    dialogEl.close();
+    // Ничего не поменяли — задача остаётся как была (в том числе в очереди).
+    if (JSON.stringify(values) === initial) return;
+
+    task.effortDays = values.effortDays;
+    applyPlacement(task, values.startOffset, values.durationDays);
+    packRow(row.tasks);
+    render();
+    recordPendingPlacement(task, { startIso: values.startIso, endIso: values.endIso })
+      .then(() => {
+        setStatus(
+          pendingCount
+            ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`
+            : "Изменения возвращены к значениям из Jira; записи удалены."
+        );
+      })
+      .catch((err) => setStatus(String(err.message || err), true));
+  }
+
+  dialogEl.querySelector("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitTaskDialog();
+  });
+  dialogEl.querySelector("form").addEventListener("input", updateDialogHint);
+  dialogEl.querySelector(".td-cancel").addEventListener("click", () => dialogEl.close());
+  dialogEl.addEventListener("close", () => {
+    dialogState = null;
+  });
+  // Клик по затемнению вокруг окна закрывает его без изменений.
+  dialogEl.addEventListener("click", (e) => {
+    if (e.target === dialogEl) dialogEl.close();
+  });
 
   function wireTaskResize(handleEl, task, row) {
     handleEl.addEventListener("mousedown", (e) => {
@@ -785,10 +936,7 @@
         el.style.top = `${TASK_INSET + top}px`;
         el.style.height = `${height}px`;
 
-        const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
-        const keyHtml = base
-          ? `<a class="task-key" href="${escapeHtml(base)}/browse/${encodeURIComponent(t.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t.key)}</a>`
-          : `<span class="task-key">${escapeHtml(t.key)}</span>`;
+        const keyHtml = `<span class="task-key">${escapeHtml(t.key)}</span>`;
         const statusHtml = `<span class="task-status">[${escapeHtml(t.status || "—")}]</span>`;
         const missingText = missingFieldsText(t);
         const missingHtml = missingText
@@ -816,7 +964,7 @@
         wireTaskEffortResize(effortEl, t, row, height / scale, unit, scale);
 
         wireTaskTooltip(el, t);
-        wireTaskOpenInJira(el, t);
+        wireTaskDialog(el, t, row);
         track.appendChild(el);
       }
 
@@ -861,8 +1009,16 @@
    * дата начала, дата окончания и продолжительность. Если задача вернулась
    * ровно к исходным значениям из Jira, сервер удаляет запись целиком.
    */
-  async function recordPendingPlacement(task) {
-    const { startIso, endIso, effortDays } = taskPlacement(task);
+  /**
+   * Записывает положение задачи в файл изменений. dates — даты, заданные
+   * явно (окно задачи): положение на шкале ограничено загруженным окном дат,
+   * а введённая вручную дата может лежать и за его пределами.
+   */
+  async function recordPendingPlacement(task, dates) {
+    const placement = taskPlacement(task);
+    const startIso = dates ? dates.startIso : placement.startIso;
+    const endIso = dates ? dates.endIso : placement.endIso;
+    const effortDays = placement.effortDays;
     const originalStart = task.originalJiraStartDate || null;
     const originalEnd = task.originalJiraEndDate || null;
     const originalEffort = task.originalEffortDays;
@@ -897,10 +1053,6 @@
 
   function wireRowDragDrop(rowEl, trackEl, row) {
     trackEl.addEventListener("dragstart", (e) => {
-      if (e.target.closest("a.task-key")) {
-        e.preventDefault();
-        return;
-      }
       const tEl = e.target.closest(".task");
       if (!tEl || !trackEl.contains(tEl)) return;
       const task = row.tasks.find((x) => x.key === tEl.dataset.issueKey);

@@ -381,8 +381,6 @@ body {
   font-weight: 700;
   opacity: 0.95;
   color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
 }
 
 .task-status {
@@ -406,8 +404,93 @@ body {
   vertical-align: text-bottom;
 }
 
-.task a.task-key:hover {
-  opacity: 1;
+/* Окно задачи: открывается по клику на прямоугольник. */
+.task-dialog {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  font-size: 0.85rem;
+  color: #263238;
+}
+
+.task-dialog::backdrop {
+  background: rgba(38, 50, 56, 0.35);
+}
+
+.task-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.task-dialog .td-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.task-dialog .td-status {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #607d8b;
+}
+
+.task-dialog .td-summary {
+  color: #455a64;
+  word-break: break-word;
+}
+
+.task-dialog .td-field {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-dialog .td-field > span:first-child {
+  color: #607d8b;
+}
+
+.task-dialog input {
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid #b0bec5;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.task-dialog .td-hint {
+  color: #607d8b;
+  font-size: 0.8rem;
+  min-height: 1.2em;
+}
+
+.task-dialog .td-error {
+  color: #c62828;
+  font-size: 0.8rem;
+}
+
+.task-dialog .td-error:empty {
+  display: none;
+}
+
+.task-dialog .td-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-dialog .td-apply {
+  background: #e3f2fd;
+  border-color: #90caf9;
+  color: #0d47a1;
+  font-weight: 600;
 }
 
 .task.dragging {
