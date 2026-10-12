@@ -307,20 +307,20 @@ body {
   cursor: grabbing;
 }
 
-/* Параллельные задачи: блок ниже обычного, поэтому текста в нём меньше.
-   Две дорожки — номер и заголовок, три и больше — всё в одну строку. */
-.task.lanes-2 {
+/* Блок ниже обычного (загрузка меньше 100%) — текста в нём меньше:
+   short — номер и заголовок, tiny — всё в одну строку. */
+.task.short {
   padding-top: 1px;
   padding-bottom: 1px;
   line-height: 1.15;
 }
 
-.task.lanes-2 .task-line-customer,
-.task.lanes-many .task-line-customer {
+.task.short .task-line-customer,
+.task.tiny .task-line-customer {
   display: none;
 }
 
-.task.lanes-many {
+.task.tiny {
   flex-direction: row;
   align-items: center;
   justify-content: flex-start;
@@ -330,11 +330,11 @@ body {
   line-height: 1.1;
 }
 
-.task.lanes-many .task-line-key {
+.task.tiny .task-line-key {
   flex-shrink: 0;
 }
 
-.task.lanes-many .task-line-title {
+.task.tiny .task-line-title {
   min-width: 0;
 }
 
@@ -438,8 +438,20 @@ body {
   cursor: ew-resize;
 }
 
+/* Нижний край блока: тянется по вертикали и меняет трудозатраты. */
+.task-resize-effort {
+  position: absolute;
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
 .task-resize:hover,
-.task-resize:active {
+.task-resize:active,
+.task-resize-effort:hover,
+.task-resize-effort:active {
   background: rgba(255, 255, 255, 0.35);
 }
 

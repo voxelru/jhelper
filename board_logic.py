@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -129,13 +130,24 @@ def working_days_between(start: date, end: date) -> int:
     return sign * count
 
 
+# Шаг трудозатрат на доске — четверть рабочего дня.
+EFFORT_STEP_DAYS = 0.25
+
+
+def round_effort_days(days: float) -> float:
+    """Трудозатраты, округлённые до четверти дня (и не меньше её)."""
+    steps = math.floor(float(days) / EFFORT_STEP_DAYS + 0.5)
+    return max(EFFORT_STEP_DAYS, steps * EFFORT_STEP_DAYS)
+
+
 def effort_seconds_to_days(seconds: int | None, settings: dict[str, Any]) -> float:
-    min_d = float(settings.get("min_effort_working_days", 1))
+    # min_effort_working_days подставляется, только когда оценки нет: длина
+    # блока больше не равна трудозатратам, и малую оценку раздувать незачем.
     if not seconds or seconds <= 0:
-        return min_d
+        return float(settings.get("min_effort_working_days", 1))
     hours = seconds / 3600.0
     wh = float(settings.get("working_hours_per_day", 8))
-    return max(min_d, hours / wh)
+    return round_effort_days(hours / wh)
 
 
 def _flatten_field_value(raw: Any) -> Any:
@@ -238,7 +250,7 @@ def effort_days_for_issue(
             n = float(raw) if raw is not None else 0.0
         except (TypeError, ValueError):
             n = 0.0
-        return max(min_d, n)
+        return round_effort_days(n) if n > 0 else min_d
 
     return min_d
 
@@ -554,7 +566,8 @@ def build_rows(
     пересекаются: такие задачи идут параллельно, а доска делит между ними
     высоту строки. Остальные задачи —
     в очередь после самой поздней из них, подряд без зазоров, в порядке
-    приоритета, как в самой первой версии доски. Так между полностью
+    приоритета; срок каждой — её трудозатраты, округлённые вверх до целого
+    дня (высота блока на доске — трудозатраты / срок). Так между полностью
     заполненными задачами намеренно остаются пустые промежутки, куда
     можно вручную перетащить любую задачу.
 
@@ -594,7 +607,8 @@ def build_rows(
 
         cursor = float(today_offset) if cursor is None else max(cursor, float(today_offset))
         for item in incomplete:
-            duration = float(item["effortDays"])
+            # Срок задачи в очереди — её трудозатраты, округлённые вверх до целого дня.
+            duration = float(max(1, math.ceil(float(item["effortDays"]) - 1e-9)))
             placed.append({**item, "startOffsetDays": round(cursor, 4), "durationDays": round(duration, 4)})
             cursor += duration
 

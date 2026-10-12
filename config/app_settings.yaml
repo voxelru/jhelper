@@ -26,7 +26,8 @@ planning_horizon:
 
 pixels_per_working_day: 36
 
-# Откуда брать плановые трудозатраты (ширина прямоугольника и значение в подсказке, в рабочих днях).
+# Откуда брать плановые трудозатраты (площадь прямоугольника и значение в подсказке, в рабочих днях).
+# На доске они округляются до четверти дня.
 # type:
 #   timetracking_original — fields.timetracking.originalEstimateSeconds -> дни через working_hours_per_day
 #   timetracking_remaining — remainingEstimateSeconds
@@ -36,7 +37,7 @@ effort:
   type: timetracking_original
   jira_field_id: null
 
-# Если оценка отсутствует — минимальная длина в человеко-днях (md).
+# Если оценка отсутствует — трудозатраты по умолчанию в человеко-днях (md).
 min_effort_working_days: 1
 working_hours_per_day: 8
 

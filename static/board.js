@@ -42,10 +42,12 @@
   let rangeTo = "";
 
   // Геометрия блоков внутри строки: отступ сверху/снизу, зазор между
-  // параллельными задачами и минимальная высота одной дорожки (px).
+  // задачами, стоящими друг под другом, и минимальная высота блока (px).
   const TASK_INSET = 4;
-  const LANE_GAP = 2;
-  const MIN_LANE_HEIGHT = 16;
+  const STACK_GAP = 2;
+  const MIN_TASK_HEIGHT = 14;
+  // Шаг трудозатрат — четверть рабочего дня; сроки всегда в целых днях.
+  const EFFORT_STEP = 0.25;
 
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
@@ -106,11 +108,12 @@
    * Раскладывает задачи строки без автоматического заполнения промежутков:
    * полностью заполненные задачи (isComplete — есть дата начала, окончания
    * и трудозатраты) встают строго на свой диапазон дат — в том числе когда
-   * диапазоны пересекаются: такие задачи идут параллельно, а по высоте их
-   * делит layoutLanes при отрисовке. Остальные — в очередь после самой
-   * поздней из них, подряд без зазоров, в порядке приоритета. Между полностью
-   * заполненными задачами намеренно остаются пустые промежутки, куда можно
-   * вручную перетащить любую задачу.
+   * диапазоны пересекаются: такие задачи идут параллельно, по вертикали их
+   * расставляет layoutStack при отрисовке. Остальные — в очередь после самой
+   * поздней из них, подряд без зазоров, в порядке приоритета; срок такой
+   * задачи — её трудозатраты, округлённые вверх до целого дня. Между
+   * полностью заполненными задачами намеренно остаются пустые промежутки,
+   * куда можно вручную перетащить любую задачу.
    */
   function packRow(tasks) {
     const complete = tasks.filter((t) => t.isComplete);
@@ -138,7 +141,7 @@
     const todayOffset = Number((settings && settings.todayOffsetDays) || 0);
     cursor = cursor === null ? todayOffset : Math.max(cursor, todayOffset);
     for (const t of incomplete) {
-      t.durationDays = t.effortDays;
+      t.durationDays = Math.max(1, Math.ceil(Number(t.effortDays) - 1e-9));
       t.startOffsetDays = Math.round(cursor * 10000) / 10000;
       cursor += t.durationDays;
     }
@@ -183,43 +186,54 @@
     };
   }
 
+  /** Трудозатраты кратны четверти дня и не меньше её. */
+  function roundEffort(days) {
+    const n = Number(days);
+    if (!Number.isFinite(n)) return EFFORT_STEP;
+    return Math.max(EFFORT_STEP, Math.round(n / EFFORT_STEP) * EFFORT_STEP);
+  }
+
+  /** Загрузка сотрудника задачей: доля рабочего дня, которую она занимает. */
+  function taskLoad(task) {
+    const duration = Number(task.durationDays) || 1;
+    return roundEffort(task.effortDays) / duration;
+  }
+
   /**
-   * Делит пересекающиеся по времени задачи строки на дорожки по высоте.
-   * Задачи, связанные цепочкой пересечений, образуют группу; внутри группы
-   * каждая получает номер дорожки (lane) и общее число дорожек (laneCount),
-   * на которое делится высота строки. Задача без пересечений остаётся в
-   * полную высоту. Возвращает наибольшее число дорожек в строке.
+   * Раскладывает задачи строки по вертикали. Длина блока — срок задачи в
+   * днях, высота — загрузка (трудозатраты / срок), так что площадь блока
+   * равна трудозатратам; unit — высота блока при загрузке 100%. Задачи,
+   * пересекающиеся по времени, ставятся друг под другом: каждая занимает
+   * самое верхнее свободное место. Проставляет top/height (px) и возвращает
+   * нижнюю границу самого низкого блока — строка растёт, если суммарная
+   * загрузка в какой-то день больше 100%.
    */
-  function layoutLanes(items) {
+  function layoutStack(items, unit) {
     const EPS = 1e-6;
     const sorted = items
       .slice()
       .sort((a, b) => a.task.startOffsetDays - b.task.startOffsetDays || (a.task.key < b.task.key ? -1 : 1));
-    let maxLanes = 1;
-    let group = [];
-    let groupEnd = -Infinity;
-    let laneEnds = [];
-
-    const closeGroup = () => {
-      for (const item of group) item.laneCount = laneEnds.length;
-      maxLanes = Math.max(maxLanes, laneEnds.length);
-      group = [];
-      laneEnds = [];
-    };
+    const placed = [];
+    let maxBottom = 0;
 
     for (const item of sorted) {
       const start = item.task.startOffsetDays;
       const end = start + item.task.durationDays;
-      if (group.length && start >= groupEnd - EPS) closeGroup();
-      let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start + EPS);
-      if (lane === -1) lane = laneEnds.length;
-      laneEnds[lane] = end;
-      item.lane = lane;
-      group.push(item);
-      groupEnd = Math.max(groupEnd, end);
+      // Зазор между блоками входит в высоту: две задачи по 50% вместе с
+      // зазором занимают ровно unit. Слишком низкий блок нельзя ни прочитать,
+      // ни схватить мышью, поэтому высота ограничена снизу.
+      const height = Math.max(MIN_TASK_HEIGHT, taskLoad(item.task) * (unit + STACK_GAP) - STACK_GAP);
+      const overlapping = placed.filter((p) => p.start < end - EPS && start < p.end - EPS);
+      const candidates = [0, ...overlapping.map((p) => p.top + p.height + STACK_GAP)].sort((x, y) => x - y);
+      const top = candidates.find((y) =>
+        overlapping.every((p) => y + height + STACK_GAP <= p.top + EPS || y >= p.top + p.height + STACK_GAP - EPS)
+      );
+      item.top = top;
+      item.height = height;
+      placed.push({ start, end, top, height });
+      maxBottom = Math.max(maxBottom, top + height);
     }
-    if (group.length) closeGroup();
-    return maxLanes;
+    return maxBottom;
   }
 
   function trackWidth(view) {
@@ -362,27 +376,28 @@
 
   /**
    * Текущее положение задачи на доске тремя параметрами: дата начала, дата
-   * окончания и продолжительность (ширина прямоугольника в рабочих днях).
-   * Это единственный источник значений, которые уходят в файл изменений.
+   * окончания (длина прямоугольника в целых рабочих днях) и трудозатраты
+   * (его площадь, кратная четверти дня). Это единственный источник значений,
+   * которые уходят в файл изменений.
    */
   function taskPlacement(task) {
-    const duration = Math.round(Number(task.durationDays) * 10000) / 10000;
+    const duration = Math.max(1, Math.round(Number(task.durationDays)));
     const { startIso, endIso } = datesForRange(task.startOffsetDays, duration);
-    return { startIso, endIso, durationDays: duration };
+    return { startIso, endIso, durationDays: duration, effortDays: roundEffort(task.effortDays) };
   }
 
   /**
-   * Ставит задачу в точный диапазон: от offsetDays на durationDays рабочих
-   * дней. Единая точка для перетаскивания и растягивания — после неё все три
-   * параметра задачи (дата начала, дата окончания, продолжительность)
-   * согласованы между собой и с тем, что уйдёт в файл изменений.
+   * Ставит задачу в точный диапазон: от offsetDays на durationDays целых
+   * рабочих дней. Единая точка для перетаскивания и растягивания — после неё
+   * даты задачи согласованы с её положением и с тем, что уйдёт в файл
+   * изменений. Трудозатраты при этом не меняются: та же работа просто
+   * распределяется по другому числу дней, и блок становится ниже или выше.
    */
   function applyPlacement(task, offsetDays, durationDays) {
-    const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
-    const duration = Math.max(minDays, Math.round(Number(durationDays) * 10000) / 10000);
-    task.startOffsetDays = Math.round(Number(offsetDays) * 10000) / 10000;
+    const duration = Math.max(1, Math.round(Number(durationDays)));
+    task.startOffsetDays = Math.round(Number(offsetDays));
     task.durationDays = duration;
-    task.effortDays = duration;
+    task.effortDays = roundEffort(task.effortDays);
     task.isComplete = true;
     task.dateRangeStartOffsetDays = task.startOffsetDays;
     task.dateRangeDurationDays = duration;
@@ -438,6 +453,12 @@
     return `${rounded} md`;
   }
 
+  /** «50% — 1 md за 2 раб. дн.»: чем объясняется высота блока. */
+  function formatLoad(task) {
+    const duration = Math.max(1, Math.round(Number(task.durationDays) || 1));
+    return `${Math.round(taskLoad(task) * 100)}% — ${formatEffort(task.effortDays)} за ${duration} раб. дн.`;
+  }
+
   function missingFieldsText(task) {
     const fields = Array.isArray(task.missingFields) ? task.missingFields : [];
     return fields.length ? fields.join(", ") : "";
@@ -457,7 +478,7 @@
       : escapeHtml(task.key);
     const pendingParts = [];
     if (task.pendingAssignee) pendingParts.push("исполнитель");
-    if (task.pendingPlacement) pendingParts.push("даты и продолжительность");
+    if (task.pendingPlacement) pendingParts.push("даты и трудозатраты");
     const pendingRow = pendingParts.length
       ? `<div class="tt-row"><span class="tt-label">Изменение</span><span class="tt-val">${escapeHtml(pendingParts.join(", "))} не сохранены в Jira</span></div>`
       : "";
@@ -471,6 +492,7 @@
       <div class="tt-row"><span class="tt-label">Начало</span><span class="tt-val">${escapeHtml(formatDateRu(startIso))}</span></div>
       <div class="tt-row"><span class="tt-label">Завершение</span><span class="tt-val">${escapeHtml(formatDateRu(endIso))}</span></div>
       <div class="tt-row"><span class="tt-label">Трудозатраты</span><span class="tt-val">${escapeHtml(formatEffort(task.effortDays))}</span></div>
+      <div class="tt-row"><span class="tt-label">Загрузка</span><span class="tt-val">${escapeHtml(formatLoad(task))}</span></div>
     `;
     tooltipEl.hidden = false;
 
@@ -517,16 +539,15 @@
       const startX = e.clientX;
       const startDuration = task.durationDays;
       // Левый край при растягивании остаётся на месте: задача занимает точный
-      // диапазон от него на новую продолжительность.
+      // диапазон от него на новый срок — в целых днях. Трудозатраты те же,
+      // поэтому блок становится длиннее и ниже (или короче и выше).
       const anchorOffset = task.startOffsetDays;
-      const minDays = (settings && settings.minEffortWorkingDays) || 0.25;
       let changed = false;
       resizeState = { task, row };
 
       const onMove = (ev) => {
         const deltaDays = (ev.clientX - startX) / ppd;
-        let next = Math.round((startDuration + deltaDays) * 4) / 4;
-        next = Math.max(minDays, next);
+        const next = Math.max(1, Math.round(startDuration + deltaDays));
         if (next !== task.durationDays) {
           applyPlacement(task, anchorOffset, next);
           changed = true;
@@ -538,26 +559,67 @@
       const onUp = () => {
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
-        resizeState = null;
-        if (!changed) {
-          render();
-          return;
-        }
-
-        recordPendingPlacement(task)
-          .then(() => {
-            setStatus(
-              pendingCount
-                ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`
-                : "Изменения возвращены к значениям из Jira; записи удалены."
-            );
-          })
-          .catch((err) => setStatus(String(err.message || err), true));
+        finishResize(task, changed);
       };
 
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     });
+  }
+
+  /**
+   * Изменение трудозатрат: нижний край блока тянется по вертикали. Срок не
+   * меняется, поэтому высота (загрузка) прямо задаёт площадь — трудозатраты,
+   * с шагом в четверть дня. unit — высота блока при загрузке 100%.
+   */
+  function wireTaskEffortResize(handleEl, task, row, startHeight, unit) {
+    handleEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hideTooltip();
+
+      const startY = e.clientY;
+      let changed = false;
+      resizeState = { task, row };
+
+      const onMove = (ev) => {
+        const height = startHeight + (ev.clientY - startY);
+        const load = (height + STACK_GAP) / (unit + STACK_GAP);
+        const next = roundEffort(load * task.durationDays);
+        if (next !== task.effortDays) {
+          task.effortDays = next;
+          changed = true;
+          render();
+        }
+      };
+
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        finishResize(task, changed);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+  }
+
+  /** Общее завершение растягивания: записать изменение или просто перерисовать. */
+  function finishResize(task, changed) {
+    resizeState = null;
+    if (!changed) {
+      render();
+      return;
+    }
+    recordPendingPlacement(task)
+      .then(() => {
+        setStatus(
+          pendingCount
+            ? `Изменения накоплены (${pendingCount}). Нажмите «Сохранить в Jira».`
+            : "Изменения возвращены к значениям из Jira; записи удалены."
+        );
+      })
+      .catch((err) => setStatus(String(err.message || err), true));
   }
 
   function render() {
@@ -652,22 +714,18 @@
       track.className = "row-track";
       track.style.width = `${trackWidth(view)}px`;
 
-      // Параллельные задачи делят высоту строки. Когда дорожек так много, что
-      // блок стал бы ниже строки текста, строка растёт.
-      const maxLanes = layoutLanes(visibleTasks);
-      const rowHeight = Math.max(
-        baseRowHeight,
-        2 * TASK_INSET + maxLanes * MIN_LANE_HEIGHT + (maxLanes - 1) * LANE_GAP
-      );
-      track.style.minHeight = `${rowHeight}px`;
+      // Высота блока — загрузка сотрудника задачей, площадь — трудозатраты.
+      // Строка растёт, когда задачи, идущие параллельно, не помещаются в неё.
+      const unit = baseRowHeight - 2 * TASK_INSET;
+      const stackBottom = layoutStack(visibleTasks, unit);
+      track.style.minHeight = `${Math.max(baseRowHeight, stackBottom + 2 * TASK_INSET)}px`;
 
-      for (const { task: t, box, lane, laneCount } of visibleTasks) {
+      for (const { task: t, box, top, height } of visibleTasks) {
         const el = document.createElement("div");
         const isResizing = !!(resizeState && resizeState.task === t);
-        const laneHeight = (rowHeight - 2 * TASK_INSET - (laneCount - 1) * LANE_GAP) / laneCount;
         el.className =
           "task" +
-          (laneCount === 2 ? " lanes-2" : laneCount > 2 ? " lanes-many" : "") +
+          (height < 26 ? " tiny" : height < 48 ? " short" : "") +
           (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
           (isResizing ? " resizing" : "") +
           (box.clipLeft ? " clip-left" : "") +
@@ -677,8 +735,8 @@
         el.style.background = t.color;
         el.style.left = `${box.left}px`;
         el.style.width = `${box.width}px`;
-        el.style.top = `${TASK_INSET + lane * (laneHeight + LANE_GAP)}px`;
-        el.style.height = `${laneHeight}px`;
+        el.style.top = `${TASK_INSET + top}px`;
+        el.style.height = `${height}px`;
 
         const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
         const keyHtml = base
@@ -700,10 +758,15 @@
         if (!box.clipLeft && !box.clipRight) {
           const resizeEl = document.createElement("div");
           resizeEl.className = "task-resize";
-          resizeEl.title = "Изменить продолжительность";
+          resizeEl.title = "Изменить срок (трудозатраты не меняются)";
           el.appendChild(resizeEl);
           wireTaskResize(resizeEl, t, row);
         }
+        const effortEl = document.createElement("div");
+        effortEl.className = "task-resize-effort";
+        effortEl.title = "Изменить трудозатраты (срок не меняется)";
+        el.appendChild(effortEl);
+        wireTaskEffortResize(effortEl, t, row, height, unit);
 
         wireTaskTooltip(el, t);
         wireTaskOpenInJira(el, t);
@@ -752,7 +815,7 @@
    * ровно к исходным значениям из Jira, сервер удаляет запись целиком.
    */
   async function recordPendingPlacement(task) {
-    const { startIso, endIso, durationDays } = taskPlacement(task);
+    const { startIso, endIso, effortDays } = taskPlacement(task);
     const originalStart = task.originalJiraStartDate || null;
     const originalEnd = task.originalJiraEndDate || null;
     const originalEffort = task.originalEffortDays;
@@ -764,7 +827,7 @@
         key: task.key,
         startDate: startIso,
         endDate: endIso,
-        effortDays: durationDays,
+        effortDays,
         originalStartDate: originalStart,
         originalEndDate: originalEnd,
         originalEffortDays: originalEffort,
@@ -773,12 +836,12 @@
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
 
-    // Раскладка строки могла сдвинуть задачу вправо от точки отпускания —
-    // храним в задаче ровно то, что записано в файл изменений.
+    // Храним в задаче ровно то, что записано в файл изменений.
     task.jiraStartDate = startIso;
     task.jiraEndDate = endIso;
+    task.effortDays = effortDays;
     task.pendingPlacement =
-      startIso !== originalStart || endIso !== originalEnd || durationDays !== originalEffort;
+      startIso !== originalStart || endIso !== originalEnd || effortDays !== originalEffort;
     pendingCount = data.count || 0;
     updateSaveButton();
     render();
@@ -841,6 +904,7 @@
       // Перетаскивание — явное указание позиции: задача занимает диапазон от
       // dropOffset и на текущую ширину вперёд и перестаёт зависеть от
       // расчётной очереди. Если там уже есть задачи, они пойдут параллельно.
+      // Срок и трудозатраты задачи при переносе не меняются.
       applyPlacement(draggedTask, dropOffset, draggedTask.durationDays);
 
       packRow(targetRow.tasks);
