@@ -44,11 +44,11 @@ working_hours_per_day: 8
 fields:
   # Заказчик — 3-я строка в прямоугольнике. Укажите ID кастомного поля Jira.
   customer:
-    jira_field_id: null  # например customfield_10100
+    jira_field_id: customfield_10100  # колонка в jira_mock/issues.csv
 
   # Спринт — используется для выпадающего фильтра в шапке страницы.
   sprint:
-    jira_field_id: null  # например customfield_10007
+    jira_field_id: customfield_10007  # колонка в jira_mock/issues.csv
 
   # Метки — выпадающий фильтр по меткам в шапке страницы. Обычно это системное
   # поле Jira `labels` (список строк), но можно указать и кастомное поле.
@@ -67,11 +67,11 @@ fields:
   # продолжительность. В Jira дата уходит, если jira_field_id задан; если
   # null — дата остаётся только на диаграмме и при сохранении пропускается.
   start_date:
-    jira_field_id: null  # например duedate / customfield_...
+    jira_field_id: customfield_10015  # например duedate / customfield_...
 
   # Дата завершения — по тем же правилам, что и start_date.
   end_date:
-    jira_field_id: null
+    jira_field_id: duedate
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Переопределения полей по типам задач.

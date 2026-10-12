@@ -5,3 +5,4 @@ __pycache__/
 venv/
 pending_changes.json
 pending_changes_history.json
+jira_mock/mock.log
