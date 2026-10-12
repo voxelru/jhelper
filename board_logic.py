@@ -550,7 +550,9 @@ def build_rows(
 
     Без автоматической расстановки по свободным промежуткам: полностью
     заполненные задачи (isComplete — есть дата начала, окончания и
-    трудозатраты) встают строго на свой диапазон дат. Остальные задачи —
+    трудозатраты) встают строго на свой диапазон дат, даже если диапазоны
+    пересекаются: такие задачи идут параллельно, а доска делит между ними
+    высоту строки. Остальные задачи —
     в очередь после самой поздней из них, подряд без зазоров, в порядке
     приоритета, как в самой первой версии доски. Так между полностью
     заполненными задачами намеренно остаются пустые промежутки, куда
@@ -586,10 +588,9 @@ def build_rows(
         for item in complete:
             duration = float(item["dateRangeDurationDays"])
             start = float(item["dateRangeStartOffsetDays"])
-            if cursor is not None:
-                start = max(start, cursor)
             placed.append({**item, "startOffsetDays": round(start, 4), "durationDays": round(duration, 4)})
-            cursor = start + duration
+            end = start + duration
+            cursor = end if cursor is None else max(cursor, end)
 
         cursor = float(today_offset) if cursor is None else max(cursor, float(today_offset))
         for item in incomplete:

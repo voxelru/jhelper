@@ -41,6 +41,12 @@
   let rangeFrom = "";
   let rangeTo = "";
 
+  // Геометрия блоков внутри строки: отступ сверху/снизу, зазор между
+  // параллельными задачами и минимальная высота одной дорожки (px).
+  const TASK_INSET = 4;
+  const LANE_GAP = 2;
+  const MIN_LANE_HEIGHT = 16;
+
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
   /** @type {{ task: any, row: any } | null} */
@@ -99,10 +105,12 @@
   /**
    * Раскладывает задачи строки без автоматического заполнения промежутков:
    * полностью заполненные задачи (isComplete — есть дата начала, окончания
-   * и трудозатраты) встают строго на свой диапазон дат. Остальные — в
-   * очередь после самой поздней из них, подряд без зазоров, в порядке
-   * приоритета. Между полностью заполненными задачами намеренно остаются
-   * пустые промежутки, куда можно вручную перетащить любую задачу.
+   * и трудозатраты) встают строго на свой диапазон дат — в том числе когда
+   * диапазоны пересекаются: такие задачи идут параллельно, а по высоте их
+   * делит layoutLanes при отрисовке. Остальные — в очередь после самой
+   * поздней из них, подряд без зазоров, в порядке приоритета. Между полностью
+   * заполненными задачами намеренно остаются пустые промежутки, куда можно
+   * вручную перетащить любую задачу.
    */
   function packRow(tasks) {
     const complete = tasks.filter((t) => t.isComplete);
@@ -120,10 +128,9 @@
     let cursor = null;
     for (const t of complete) {
       t.durationDays = t.dateRangeDurationDays;
-      const start =
-        cursor === null ? t.dateRangeStartOffsetDays : Math.max(t.dateRangeStartOffsetDays, cursor);
-      t.startOffsetDays = Math.round(start * 10000) / 10000;
-      cursor = start + t.durationDays;
+      t.startOffsetDays = Math.round(t.dateRangeStartOffsetDays * 10000) / 10000;
+      const end = t.startOffsetDays + t.durationDays;
+      cursor = cursor === null ? end : Math.max(cursor, end);
     }
 
     // Задачи без дат не раскладываем задним числом: очередь начинается не
@@ -174,6 +181,45 @@
       clipLeft: taskStart < view.startIndex,
       clipRight: taskEnd > view.endIndex,
     };
+  }
+
+  /**
+   * Делит пересекающиеся по времени задачи строки на дорожки по высоте.
+   * Задачи, связанные цепочкой пересечений, образуют группу; внутри группы
+   * каждая получает номер дорожки (lane) и общее число дорожек (laneCount),
+   * на которое делится высота строки. Задача без пересечений остаётся в
+   * полную высоту. Возвращает наибольшее число дорожек в строке.
+   */
+  function layoutLanes(items) {
+    const EPS = 1e-6;
+    const sorted = items
+      .slice()
+      .sort((a, b) => a.task.startOffsetDays - b.task.startOffsetDays || (a.task.key < b.task.key ? -1 : 1));
+    let maxLanes = 1;
+    let group = [];
+    let groupEnd = -Infinity;
+    let laneEnds = [];
+
+    const closeGroup = () => {
+      for (const item of group) item.laneCount = laneEnds.length;
+      maxLanes = Math.max(maxLanes, laneEnds.length);
+      group = [];
+      laneEnds = [];
+    };
+
+    for (const item of sorted) {
+      const start = item.task.startOffsetDays;
+      const end = start + item.task.durationDays;
+      if (group.length && start >= groupEnd - EPS) closeGroup();
+      let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start + EPS);
+      if (lane === -1) lane = laneEnds.length;
+      laneEnds[lane] = end;
+      item.lane = lane;
+      group.push(item);
+      groupEnd = Math.max(groupEnd, end);
+    }
+    if (group.length) closeGroup();
+    return maxLanes;
   }
 
   function trackWidth(view) {
@@ -563,6 +609,8 @@
 
     let shownTasks = 0;
     let shownEffort = 0;
+    const baseRowHeight =
+      parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--row-height")) || 72;
 
     for (const row of model.rows) {
       // Задача попадает на доску, если проходит фильтры и хотя бы частью
@@ -604,11 +652,22 @@
       track.className = "row-track";
       track.style.width = `${trackWidth(view)}px`;
 
-      for (const { task: t, box } of visibleTasks) {
+      // Параллельные задачи делят высоту строки. Когда дорожек так много, что
+      // блок стал бы ниже строки текста, строка растёт.
+      const maxLanes = layoutLanes(visibleTasks);
+      const rowHeight = Math.max(
+        baseRowHeight,
+        2 * TASK_INSET + maxLanes * MIN_LANE_HEIGHT + (maxLanes - 1) * LANE_GAP
+      );
+      track.style.minHeight = `${rowHeight}px`;
+
+      for (const { task: t, box, lane, laneCount } of visibleTasks) {
         const el = document.createElement("div");
         const isResizing = !!(resizeState && resizeState.task === t);
+        const laneHeight = (rowHeight - 2 * TASK_INSET - (laneCount - 1) * LANE_GAP) / laneCount;
         el.className =
           "task" +
+          (laneCount === 2 ? " lanes-2" : laneCount > 2 ? " lanes-many" : "") +
           (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
           (isResizing ? " resizing" : "") +
           (box.clipLeft ? " clip-left" : "") +
@@ -618,6 +677,8 @@
         el.style.background = t.color;
         el.style.left = `${box.left}px`;
         el.style.width = `${box.width}px`;
+        el.style.top = `${TASK_INSET + lane * (laneHeight + LANE_GAP)}px`;
+        el.style.height = `${laneHeight}px`;
 
         const base = (settings.jiraBaseUrl || "").replace(/\/$/, "");
         const keyHtml = base
@@ -779,7 +840,7 @@
 
       // Перетаскивание — явное указание позиции: задача занимает диапазон от
       // dropOffset и на текущую ширину вперёд и перестаёт зависеть от
-      // расчётной очереди.
+      // расчётной очереди. Если там уже есть задачи, они пойдут параллельно.
       applyPlacement(draggedTask, dropOffset, draggedTask.durationDays);
 
       packRow(targetRow.tasks);
