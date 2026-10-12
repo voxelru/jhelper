@@ -13,13 +13,25 @@ from settings import (
     date_field_cfg,
     effort_cfg,
     horizon_cfg,
+    issue_type_overrides,
     labels_field_id,
     priorities_cfg,
+    settings_for_issue_type,
     sprint_field_id,
 )
 
 # Системные поля Jira, которые нужны всегда вне зависимости от настроек.
-BASE_JIRA_FIELDS = ["summary", "assignee", "priority", "status", "timetracking"]
+# issuetype нужен, чтобы выбрать поля под конкретный тип задачи (issue_types).
+BASE_JIRA_FIELDS = ["summary", "assignee", "priority", "status", "timetracking", "issuetype"]
+
+
+def issue_type_identity(raw: Any) -> tuple[str | None, str | None]:
+    """(название, id) типа задачи из поля issuetype."""
+    if not isinstance(raw, dict):
+        return None, None
+    name = raw.get("name")
+    type_id = raw.get("id")
+    return (str(name) if name else None), (str(type_id) if type_id is not None else None)
 
 
 # Предохранитель на случай, когда в фильтре выбран очень широкий интервал:
@@ -360,9 +372,9 @@ def priority_rank(name: str | None, order: list[str]) -> int:
         return len(order) + 50
 
 
-def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
-    """Список полей Jira для запроса: системные + настроенные в effort/fields."""
-    fields = list(BASE_JIRA_FIELDS)
+def _fields_for_settings(settings: dict[str, Any]) -> list[str]:
+    """Поля Jira, настроенные в одном наборе настроек (корневом или для типа)."""
+    fields: list[str] = []
     effort_type, effort_field_id = effort_cfg(settings)
     if effort_type in ("number_field", "seconds_field") and effort_field_id:
         fields.append(effort_field_id)
@@ -383,6 +395,20 @@ def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
         fid = date_field_cfg(settings, name)
         if fid:
             fields.append(fid)
+    return fields
+
+
+def collect_jira_fields(settings: dict[str, Any]) -> list[str]:
+    """Список полей Jira для запроса: системные + настроенные в effort/fields.
+
+    Запрос один на все задачи, поэтому берём объединение полей корневых
+    настроек и всех переопределений из issue_types — иначе у задач «чужого»
+    типа нужные поля просто не пришли бы в ответе.
+    """
+    fields = list(BASE_JIRA_FIELDS)
+    fields.extend(_fields_for_settings(settings))
+    for type_key in issue_type_overrides(settings):
+        fields.extend(_fields_for_settings(settings_for_issue_type(settings, str(type_key))))
 
     seen: set[str] = set()
     out: list[str] = []
@@ -412,16 +438,22 @@ def normalize_issues(
     """Превращает сырые issues Jira в задачи доски (без раскладки по строкам).
 
     planning_start — начало окна шкалы, от которого считаются смещения задач
-    (по умолчанию — начало горизонта планирования)."""
-    effort_type, effort_field_id = effort_cfg(settings)
+    (по умолчанию — начало горизонта планирования).
+
+    Поля трудозатрат и дат берутся по типу задачи: для каждого issue
+    применяются переопределения issue_types, если для его типа они заданы."""
     order, colors = priorities_cfg(settings)
-    cust_fid = customer_field_id(settings)
-    sprint_fid = sprint_field_id(settings)
-    labels_fid = labels_field_id(settings)
-    start_fid = date_field_cfg(settings, "start_date")
-    end_fid = date_field_cfg(settings, "end_date")
     if planning_start is None:
         planning_start, _planning_end = planning_bounds(settings)
+
+    # Настройки на тип задачи считаем один раз на тип, а не на каждую задачу.
+    type_settings_cache: dict[tuple[str | None, str | None], dict[str, Any]] = {}
+
+    def settings_for(type_name: str | None, type_id: str | None) -> dict[str, Any]:
+        cache_key = (type_name, type_id)
+        if cache_key not in type_settings_cache:
+            type_settings_cache[cache_key] = settings_for_issue_type(settings, type_name, type_id)
+        return type_settings_cache[cache_key]
 
     tasks: list[dict[str, Any]] = []
     for issue in raw_issues:
@@ -437,7 +469,16 @@ def normalize_issues(
         if not assignee_id:
             continue
 
-        effort_days = effort_days_for_issue(fields, effort_type, effort_field_id, settings)
+        issue_type_name, issue_type_id = issue_type_identity(fields.get("issuetype"))
+        type_settings = settings_for(issue_type_name, issue_type_id)
+        effort_type, effort_field_id = effort_cfg(type_settings)
+        cust_fid = customer_field_id(type_settings)
+        sprint_fid = sprint_field_id(type_settings)
+        labels_fid = labels_field_id(type_settings)
+        start_fid = date_field_cfg(type_settings, "start_date")
+        end_fid = date_field_cfg(type_settings, "end_date")
+
+        effort_days = effort_days_for_issue(fields, effort_type, effort_field_id, type_settings)
         has_effort = has_jira_effort(fields, effort_type, effort_field_id)
         color = colors.get(priority_name) or colors.get("default") or "#78909c"
         customer = format_display_value(fields.get(cust_fid)) if cust_fid else None
@@ -467,6 +508,7 @@ def normalize_issues(
                 "key": key,
                 "summary": summary,
                 "status": status_name,
+                "issueType": issue_type_name,
                 "customer": customer,
                 "sprint": sprint,
                 "labels": labels,

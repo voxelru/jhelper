@@ -44,6 +44,64 @@ def effort_cfg(s: dict[str, Any]) -> tuple[str, str | None]:
     return t, fid
 
 
+def issue_type_overrides(s: dict[str, Any]) -> dict[str, Any]:
+    """Секция issue_types: переопределения полей для отдельных типов задач."""
+    raw = s.get("issue_types") or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _merge_field_cfg(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        return {**base, **override}
+    return override
+
+
+def settings_for_issue_type(
+    s: dict[str, Any],
+    issue_type_name: str | None = None,
+    issue_type_id: str | None = None,
+) -> dict[str, Any]:
+    """Настройки с учётом переопределений для конкретного типа задачи.
+
+    Ключом в issue_types может быть название типа («Задача», «Epic»; регистр и
+    пробелы по краям не важны) или его id. В переопределении достаточно указать
+    только отличающиеся секции effort/fields — остальное берётся из корневых
+    настроек, поэтому дальше с результатом работают те же effort_cfg(),
+    date_field_cfg() и прочие функции модуля.
+    """
+    overrides = issue_type_overrides(s)
+    if not overrides:
+        return s
+
+    wanted_name = str(issue_type_name).strip().casefold() if issue_type_name else None
+    wanted_id = str(issue_type_id).strip() if issue_type_id else None
+
+    match: dict[str, Any] | None = None
+    for key, cfg in overrides.items():
+        if not isinstance(cfg, dict):
+            continue
+        key_text = str(key).strip()
+        if wanted_name and key_text.casefold() == wanted_name:
+            match = cfg
+            break
+        if wanted_id and key_text == wanted_id:
+            match = cfg
+            break
+    if not match:
+        return s
+
+    merged = dict(s)
+    if isinstance(match.get("effort"), dict):
+        merged["effort"] = {**(s.get("effort") or {}), **match["effort"]}
+    if isinstance(match.get("fields"), dict):
+        base_fields = s.get("fields") or {}
+        fields = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base_fields.items()}
+        for name, cfg in match["fields"].items():
+            fields[name] = _merge_field_cfg(fields.get(name), cfg)
+        merged["fields"] = fields
+    return merged
+
+
 def _field_cfg(s: dict[str, Any], name: str) -> dict[str, Any]:
     fields = s.get("fields") or {}
     cfg = fields.get(name) or {}

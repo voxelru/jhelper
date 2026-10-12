@@ -122,6 +122,34 @@ def search_issues_jql(
     return issues
 
 
+def get_issue_type(
+    base_url: str,
+    session: requests.Session,
+    issue_key: str,
+) -> tuple[str | None, str | None]:
+    """(название, id) типа задачи — нужен, чтобы выбрать поля под этот тип.
+
+    Читается прямо перед записью: в файле несохранённых изменений лежит только
+    ключ задачи, а поля дат и трудозатрат зависят от типа (секция issue_types).
+    """
+    last_error: str | None = None
+    for api_version in ("2", "3"):
+        url = f"{base_url}/rest/api/{api_version}/issue/{issue_key}"
+        r = session.get(url, params={"fields": "issuetype"}, timeout=60)
+        if r.status_code == 200:
+            issue_type = ((r.json().get("fields") or {}).get("issuetype")) or {}
+            name = issue_type.get("name")
+            type_id = issue_type.get("id")
+            logger.info("Jira GET %s | тип задачи: %s (id %s)", issue_key, name, type_id)
+            return (str(name) if name else None), (str(type_id) if type_id is not None else None)
+        last_error = f"{r.status_code}: {r.text[:200]}"
+        if r.status_code == 404 and api_version == "2":
+            continue
+        break
+    logger.warning("Jira GET %s | тип задачи не определён (%s)", issue_key, last_error)
+    return None, None
+
+
 def update_issue_assignee(
     base_url: str,
     session: requests.Session,

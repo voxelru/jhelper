@@ -25,6 +25,7 @@ from board_logic import (
 )
 from jira_client import (
     JiraConfigError,
+    get_issue_type,
     get_jira_session,
     search_issues_jql,
     update_issue_assignee,
@@ -41,7 +42,14 @@ from pending_changes import (
     upsert_pending_placement,
     write_pending,
 )
-from settings import date_field_cfg, effort_cfg, horizon_cfg, load_settings, priorities_cfg
+from settings import (
+    date_field_cfg,
+    effort_cfg,
+    horizon_cfg,
+    load_settings,
+    priorities_cfg,
+    settings_for_issue_type,
+)
 
 load_dotenv()
 
@@ -231,9 +239,6 @@ def api_save():
         return jsonify({"saved": 0, "failed": [], "message": "Нет изменений для сохранения"})
 
     s = load_settings()
-    effort_type, effort_field_id = effort_cfg(s)
-    start_fid = date_field_cfg(s, "start_date")
-    end_fid = date_field_cfg(s, "end_date")
 
     try:
         base, session = get_jira_session()
@@ -249,6 +254,27 @@ def api_save():
 
     for key, item in changes.items():
         remaining_item: dict = {}
+
+        # Поля трудозатрат и дат зависят от типа задачи (секция issue_types),
+        # а в файле изменений лежит только ключ — тип спрашиваем у Jira.
+        try:
+            type_name, type_id = get_issue_type(base, session, key)
+        except Exception as e:
+            log.warning("%s: не удалось узнать тип задачи (%s), беру общие настройки", key, e)
+            type_name, type_id = None, None
+        type_settings = settings_for_issue_type(s, type_name, type_id)
+        effort_type, effort_field_id = effort_cfg(type_settings)
+        start_fid = date_field_cfg(type_settings, "start_date")
+        end_fid = date_field_cfg(type_settings, "end_date")
+        log.info(
+            "%s: тип «%s» -> трудозатраты %s/%s, даты %s / %s",
+            key,
+            type_name or "по умолчанию",
+            effort_type,
+            effort_field_id or "—",
+            start_fid or "—",
+            end_fid or "—",
+        )
 
         if "assigneeId" in item:
             try:
@@ -268,7 +294,7 @@ def api_save():
 
         if "effortDays" in item:
             try:
-                raw = effort_days_to_jira_raw(item["effortDays"], effort_type, s)
+                raw = effort_days_to_jira_raw(item["effortDays"], effort_type, type_settings)
                 log.info(
                     "%s: трудозатраты -> %s рабочих дней (в Jira: %r, тип %s)",
                     key,
@@ -299,7 +325,8 @@ def api_save():
                 skipped.append({"key": key, "field": field_name, "reason": reason})
                 continue
             if not field_id:
-                reason = f"не задан {cfg_key} в config/app_settings.yaml"
+                where = f" (тип задачи «{type_name}»)" if type_name else ""
+                reason = f"не задан {cfg_key} в config/app_settings.yaml{where}"
                 log.warning("%s: %s (%s) не сохранена — %s", key, field_name, value, reason)
                 skipped.append({"key": key, "field": field_name, "reason": reason})
                 continue
