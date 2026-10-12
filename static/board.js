@@ -11,6 +11,7 @@
 (function () {
   const boardEl = document.getElementById("board");
   const statusEl = document.getElementById("status");
+  const summaryEl = document.getElementById("summary");
   const btnRefresh = document.getElementById("btn-refresh");
   const btnUndo = document.getElementById("btn-undo");
   const btnClear = document.getElementById("btn-clear");
@@ -53,6 +54,20 @@
   function setStatus(text, isError) {
     statusEl.textContent = text || "";
     statusEl.style.color = isError ? "#c62828" : "#546e7a";
+  }
+
+  /**
+   * Сводка в шапке: сколько задач и трудозатрат сейчас на доске. Пока фильтры
+   * что-то скрывают, рядом показывается и общее число загруженных задач.
+   */
+  function updateSummary(shownTasks, shownEffort) {
+    if (!model) {
+      summaryEl.textContent = "";
+      return;
+    }
+    const total = countTasks(model);
+    const tasksText = shownTasks === total ? `Задач: ${total}` : `Задач: ${shownTasks} из ${total}`;
+    summaryEl.textContent = `${tasksText} · ${formatEffort(shownEffort)}`;
   }
 
   function updateSaveButton() {
@@ -502,6 +517,7 @@
   function render() {
     boardEl.innerHTML = "";
     hideTooltip();
+    updateSummary(0, 0);
     if (!settings || !model) return;
 
     ppd = Number(settings.pixelsPerWorkingDay || 36);
@@ -545,19 +561,22 @@
     header.appendChild(timeline);
     inner.appendChild(header);
 
+    let shownTasks = 0;
+    let shownEffort = 0;
+
     for (const row of model.rows) {
       // Задача попадает на доску, если проходит фильтры и хотя бы частью
-      // попадает в выбранный диапазон дат.
+      // попадает в выбранный диапазон дат. Строка сотрудника остаётся и без
+      // задач — состав и порядок строк не должны прыгать при смене фильтров.
       const visibleTasks = [];
       for (const t of row.tasks) {
         if (!taskMatchesFilters(t)) continue;
         const box = taskViewBox(t, view);
         if (box) visibleTasks.push({ task: t, box });
       }
-      if (!visibleTasks.length) continue;
 
       const rowEl = document.createElement("div");
-      rowEl.className = "board-row";
+      rowEl.className = "board-row" + (visibleTasks.length ? "" : " no-tasks");
       rowEl.dataset.assigneeId = row.assigneeId || "";
 
       // Рядом с сотрудником — суммарная оценка задач, попавших в текущие
@@ -566,6 +585,8 @@
         const n = Number(task.effortDays);
         return sum + (Number.isFinite(n) ? n : 0);
       }, 0);
+      shownTasks += visibleTasks.length;
+      shownEffort += rowEffort;
 
       const label = document.createElement("div");
       label.className = "row-label";
@@ -575,7 +596,7 @@
       const totalEl = document.createElement("span");
       totalEl.className = "row-total";
       totalEl.textContent = formatEffort(rowEffort);
-      totalEl.title = `Суммарная оценка показанных задач (${visibleTasks.length}) с учётом фильтров`;
+      totalEl.title = `Суммарная оценка показанных задач (${visibleTasks.length} из ${row.tasks.length}) с учётом фильтров`;
       label.append(nameEl, totalEl);
       rowEl.appendChild(label);
 
@@ -635,6 +656,7 @@
 
     boardEl.appendChild(inner);
     boardEl.setAttribute("aria-busy", "false");
+    updateSummary(shownTasks, shownEffort);
   }
 
   function escapeHtml(s) {
@@ -823,12 +845,7 @@
     populateLabelFilter();
     rebuildAllPacks();
     render();
-    const base = `Задач: ${countTasks(model)}`;
-    setStatus(
-      pendingCount
-        ? `${base}. Несохранённых изменений: ${pendingCount}`
-        : base
-    );
+    setStatus(pendingCount ? `Несохранённых изменений: ${pendingCount}` : "");
   }
 
   function countTasks(m) {
@@ -871,6 +888,9 @@
       const failed = Array.isArray(data.failed) ? data.failed : [];
       const skipped = Array.isArray(data.skipped) ? data.skipped : [];
       const skippedNote = skipped.length ? ` Не записано в Jira: ${describeSkipped(skipped)}.` : "";
+      // Итог сохранения показываем после перезагрузки доски, иначе её
+      // собственный статус тут же затрёт сообщение об ошибках и пропусках.
+      await loadBoard();
       if (failed.length) {
         const keys = failed.map((f) => f.key).join(", ");
         setStatus(`Сохранено: ${data.saved || 0}. Ошибки: ${keys}.${skippedNote}`, true);
@@ -879,7 +899,6 @@
       } else {
         setStatus(`Сохранено в Jira: ${data.saved || 0}`);
       }
-      await loadBoard();
     } catch (e) {
       updateSaveButton();
       setStatus(String(e.message || e), true);
@@ -906,20 +925,16 @@
 
   btnUndo.addEventListener("click", () => {
     undoLastPending()
-      .then(() => {
-        setStatus("Последнее действие отменено.");
-        return loadBoard();
-      })
+      .then(() => loadBoard())
+      .then(() => setStatus("Последнее действие отменено."))
       .catch((e) => setStatus(String(e.message || e), true));
   });
 
   btnClear.addEventListener("click", () => {
     if (pendingCount > 0 && !window.confirm("Отменить все несохранённые изменения?")) return;
     clearAllPending()
-      .then(() => {
-        setStatus("Все несохранённые изменения отменены.");
-        return loadBoard();
-      })
+      .then(() => loadBoard())
+      .then(() => setStatus("Все несохранённые изменения отменены."))
       .catch((e) => setStatus(String(e.message || e), true));
   });
 

@@ -138,6 +138,20 @@ body {
   color: #546e7a;
 }
 
+.board-summary {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #455a64;
+  background: #eceff1;
+  border-radius: 10px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.board-summary:empty {
+  display: none;
+}
+
 .board-wrap {
   padding: 1rem;
   overflow: auto;
@@ -236,6 +250,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Сотрудник без задач в текущих фильтрах: строка остаётся, но приглушена. */
+.board-row.no-tasks .row-name,
+.board-row.no-tasks .row-total {
+  color: #9aa7ae;
 }
 
 /* Суммарная оценка задач строки в текущих фильтрах. */
