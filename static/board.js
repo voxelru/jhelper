@@ -202,11 +202,14 @@
   /**
    * Раскладывает задачи строки по вертикали. Длина блока — срок задачи в
    * днях, высота — загрузка (трудозатраты / срок), так что площадь блока
-   * равна трудозатратам; unit — высота блока при загрузке 100%. Задачи,
-   * пересекающиеся по времени, ставятся друг под другом: каждая занимает
-   * самое верхнее свободное место. Проставляет top/height (px) и возвращает
-   * нижнюю границу самого низкого блока — строка растёт, если суммарная
-   * загрузка в какой-то день больше 100%.
+   * равна трудозатратам; unit — высота блока при загрузке 100% и она же —
+   * вся доступная высота строки. Задачи, пересекающиеся по времени, ставятся
+   * друг под другом: каждая занимает самое верхнее свободное место.
+   *
+   * Высота строки не меняется. Если группа пересекающихся задач не помещается
+   * в неё, вся группа сжимается по вертикали до высоты строки (одиночная
+   * задача с загрузкой больше 100% просто обрезается до неё). Проставляет
+   * top/height (px) и scale — во сколько раз блок сжат (1 — не сжат).
    */
   function layoutStack(items, unit) {
     const EPS = 1e-6;
@@ -214,11 +217,24 @@
       .slice()
       .sort((a, b) => a.task.startOffsetDays - b.task.startOffsetDays || (a.task.key < b.task.key ? -1 : 1));
     const placed = [];
-    let maxBottom = 0;
+    let group = [];
+    let groupEnd = -Infinity;
+
+    const closeGroup = () => {
+      const bottom = Math.max(...group.map((item) => item.top + item.height));
+      const scale = bottom > unit + EPS ? unit / bottom : 1;
+      for (const item of group) {
+        item.top *= scale;
+        item.height *= scale;
+        item.scale = scale;
+      }
+      group = [];
+    };
 
     for (const item of sorted) {
       const start = item.task.startOffsetDays;
       const end = start + item.task.durationDays;
+      if (group.length && start >= groupEnd - EPS) closeGroup();
       // Зазор между блоками входит в высоту: две задачи по 50% вместе с
       // зазором занимают ровно unit. Слишком низкий блок нельзя ни прочитать,
       // ни схватить мышью, поэтому высота ограничена снизу.
@@ -231,9 +247,28 @@
       item.top = top;
       item.height = height;
       placed.push({ start, end, top, height });
-      maxBottom = Math.max(maxBottom, top + height);
+      group.push(item);
+      groupEnd = Math.max(groupEnd, end);
     }
-    return maxBottom;
+    if (group.length) closeGroup();
+  }
+
+  /**
+   * Дни, в которые суммарная загрузка сотрудника показанными задачами больше
+   * 100%: [{ day, load }], day — номер рабочего дня от начала горизонта.
+   * Сроки задач — целые дни, поэтому достаточно сложить загрузку по дням.
+   */
+  function overloadedDays(items) {
+    const loadByDay = new Map();
+    for (const { task } of items) {
+      const load = taskLoad(task);
+      const start = Math.round(task.startOffsetDays);
+      const end = start + Math.max(1, Math.round(task.durationDays));
+      for (let day = start; day < end; day++) {
+        loadByDay.set(day, (loadByDay.get(day) || 0) + load);
+      }
+    }
+    return Array.from(loadByDay, ([day, load]) => ({ day, load })).filter((x) => x.load > 1 + 1e-6);
   }
 
   function trackWidth(view) {
@@ -570,9 +605,11 @@
   /**
    * Изменение трудозатрат: нижний край блока тянется по вертикали. Срок не
    * меняется, поэтому высота (загрузка) прямо задаёт площадь — трудозатраты,
-   * с шагом в четверть дня. unit — высота блока при загрузке 100%.
+   * с шагом в четверть дня. unit — высота блока при загрузке 100%,
+   * startHeight — высота блока без сжатия, scale — во сколько раз он сжат на
+   * экране (движение мыши пересчитывается в несжатые пиксели).
    */
-  function wireTaskEffortResize(handleEl, task, row, startHeight, unit) {
+  function wireTaskEffortResize(handleEl, task, row, startHeight, unit, scale) {
     handleEl.addEventListener("mousedown", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -583,7 +620,7 @@
       resizeState = { task, row };
 
       const onMove = (ev) => {
-        const height = startHeight + (ev.clientY - startY);
+        const height = startHeight + (ev.clientY - startY) / scale;
         const load = (height + STACK_GAP) / (unit + STACK_GAP);
         const next = roundEffort(load * task.durationDays);
         if (next !== task.effortDays) {
@@ -715,17 +752,27 @@
       track.style.width = `${trackWidth(view)}px`;
 
       // Высота блока — загрузка сотрудника задачей, площадь — трудозатраты.
-      // Строка растёт, когда задачи, идущие параллельно, не помещаются в неё.
+      // Высота строки постоянна: то, что в неё не помещается, сжимается, а
+      // дни с загрузкой больше 100% подчёркиваются красным по нижнему краю.
       const unit = baseRowHeight - 2 * TASK_INSET;
-      const stackBottom = layoutStack(visibleTasks, unit);
-      track.style.minHeight = `${Math.max(baseRowHeight, stackBottom + 2 * TASK_INSET)}px`;
+      layoutStack(visibleTasks, unit);
 
-      for (const { task: t, box, top, height } of visibleTasks) {
+      for (const { day, load } of overloadedDays(visibleTasks)) {
+        if (day < view.startIndex || day >= view.endIndex) continue;
+        const mark = document.createElement("div");
+        mark.className = "overload-day";
+        mark.style.left = `${(day - view.startIndex) * ppd}px`;
+        mark.style.width = `${ppd}px`;
+        mark.title = `Загрузка ${Math.round(load * 100)}% — задачи сжаты по высоте`;
+        track.appendChild(mark);
+      }
+
+      for (const { task: t, box, top, height, scale } of visibleTasks) {
         const el = document.createElement("div");
         const isResizing = !!(resizeState && resizeState.task === t);
         el.className =
           "task" +
-          (height < 26 ? " tiny" : height < 48 ? " short" : "") +
+          (height < 11 ? " sliver" : height < 26 ? " tiny" : height < 48 ? " short" : "") +
           (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
           (isResizing ? " resizing" : "") +
           (box.clipLeft ? " clip-left" : "") +
@@ -766,7 +813,7 @@
         effortEl.className = "task-resize-effort";
         effortEl.title = "Изменить трудозатраты (срок не меняется)";
         el.appendChild(effortEl);
-        wireTaskEffortResize(effortEl, t, row, height, unit);
+        wireTaskEffortResize(effortEl, t, row, height / scale, unit, scale);
 
         wireTaskTooltip(el, t);
         wireTaskOpenInJira(el, t);

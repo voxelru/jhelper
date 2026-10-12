@@ -330,6 +330,26 @@ body {
   line-height: 1.1;
 }
 
+/* Сжатый до нескольких пикселей блок: текст не помещается, остаётся полоса
+   цвета задачи — подробности в подсказке. */
+.task.sliver {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.task.sliver .task-line {
+  display: none;
+}
+
+/* День, в который загрузка сотрудника больше 100%. */
+.overload-day {
+  position: absolute;
+  bottom: 0;
+  height: 3px;
+  background: #d32f2f;
+  z-index: 1;
+}
+
 .task.tiny .task-line-key {
   flex-shrink: 0;
 }
