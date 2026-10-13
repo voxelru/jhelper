@@ -73,7 +73,9 @@ def planning_bounds(
 ) -> tuple[date, date]:
     """Окно шкалы времени.
 
-    По умолчанию — от сегодняшнего дня на горизонт планирования из настроек.
+    По умолчанию — с понедельника текущей недели: начало недели остаётся на
+    виду, а горизонт планирования из настроек по-прежнему отсчитывается от
+    сегодняшнего дня.
     Фильтр по датам на странице может задать любой другой интервал, в том
     числе целиком в прошлом: тогда шкала строится по нему (с ограничением
     MAX_WINDOW_WORKING_DAYS на ширину окна).
@@ -82,13 +84,14 @@ def planning_bounds(
     today = date.today()
     if start and end and end < start:
         start, end = end, start
+    week_start = today - timedelta(days=today.weekday())
     if start is None and end is None:
-        start = today
-        end = _horizon_end(start, kind, count)
+        start = week_start
+        end = _horizon_end(today, kind, count)
     elif end is None:
         end = _horizon_end(start, kind, count)
     elif start is None:
-        start = min(today, end)
+        start = min(week_start, end)
     return start, _cap_end(start, end)
 
 
@@ -476,6 +479,10 @@ def normalize_issues(
         priority_name = pr.get("name")
         status = fields.get("status") or {}
         status_name = status.get("name") if isinstance(status, dict) else None
+        # Ключ категории статуса (new / indeterminate / done) не зависит от языка
+        # Jira, в отличие от её названия.
+        status_category = (status.get("statusCategory") if isinstance(status, dict) else None) or {}
+        status_category_key = status_category.get("key") if isinstance(status_category, dict) else None
         assignee = fields.get("assignee")
         assignee_id, assignee_name = assignee_identity(assignee if isinstance(assignee, dict) else None)
         if not assignee_id:
@@ -520,6 +527,7 @@ def normalize_issues(
                 "key": key,
                 "summary": summary,
                 "status": status_name,
+                "statusCategory": status_category_key,
                 "issueType": issue_type_name,
                 "customer": customer,
                 "sprint": sprint,

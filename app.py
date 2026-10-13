@@ -149,6 +149,7 @@ def api_board():
         "planningStart": start.isoformat(),
         "planningEnd": end.isoformat(),
         "todayOffsetDays": today_offset,
+        "today": date.today().isoformat(),
         "maxWindowWorkingDays": MAX_WINDOW_WORKING_DAYS,
         "workingDates": [d.isoformat() for d in iter_working_dates(start, end)],
         "pixelsPerWorkingDay": s.get("pixels_per_working_day", 36),

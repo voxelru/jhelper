@@ -8,31 +8,54 @@
 </head>
 <body>
   <header class="toolbar">
-    <h1>План задач</h1>
-    <span id="summary" class="board-summary" title="Задачи и суммарные трудозатраты с учётом фильтров"></span>
-    <label class="sprint-filter-label" for="sprint-filter">Спринт:</label>
-    <select id="sprint-filter">
-      <option value="">Все спринты</option>
-    </select>
-    <label class="sprint-filter-label" for="customer-filter">Бизнес-партнёр:</label>
-    <select id="customer-filter">
-      <option value="">Все бизнес-партнёры</option>
-    </select>
-    <label class="sprint-filter-label" for="label-filter">Метки:</label>
-    <select id="label-filter">
-      <option value="">Все метки</option>
-    </select>
-    <label class="sprint-filter-label" for="range-from">Даты:</label>
-    <input type="date" id="range-from" class="range-input" aria-label="Показывать календарные дни начиная с даты" />
-    <span class="range-dash">—</span>
-    <input type="date" id="range-to" class="range-input" aria-label="Показывать календарные дни по дату включительно" />
-    <button type="button" id="btn-range-reset" class="icon-btn" title="Весь горизонт планирования" aria-label="Сбросить фильтр по датам">↺</button>
-    <input type="search" id="search-input" placeholder="Поиск по номеру или заголовку…" aria-label="Поиск по номеру или заголовку задачи" />
-    <button type="button" id="btn-refresh">Обновить из Jira</button>
-    <button type="button" id="btn-undo" class="icon-btn" disabled title="Отменить последнее действие" aria-label="Отменить последнее действие">↩</button>
-    <button type="button" id="btn-clear" class="icon-btn" disabled title="Отменить все несохранённые изменения" aria-label="Отменить все несохранённые изменения">✕</button>
-    <button type="button" id="btn-save" disabled>Сохранить в Jira</button>
-    <span id="status" class="status"></span>
+    <div class="toolbar-main">
+      <h1>План задач</h1>
+      <span id="summary" class="board-summary" title="Задачи и суммарные трудозатраты с учётом фильтров"></span>
+      <label class="search-box" title="Поиск по номеру или заголовку задачи">
+        <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <line x1="10" y1="10" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <input type="search" id="search-input" placeholder="Поиск по номеру или заголовку…" aria-label="Поиск по номеру или заголовку задачи" />
+      </label>
+      <button type="button" id="btn-filters" class="filters-toggle" aria-expanded="false" aria-controls="filters-panel">
+        Фильтры<span id="filters-count" class="filters-count" hidden></span><span class="filters-caret" aria-hidden="true">▾</span>
+      </button>
+      <span id="status" class="status"></span>
+      <div class="toolbar-actions">
+        <button type="button" id="btn-refresh">Обновить из Jira</button>
+        <button type="button" id="btn-undo" class="icon-btn" disabled title="Отменить последнее действие" aria-label="Отменить последнее действие">↩</button>
+        <button type="button" id="btn-clear" class="icon-btn" disabled title="Отменить все несохранённые изменения" aria-label="Отменить все несохранённые изменения">✕</button>
+        <button type="button" id="btn-save" disabled>Сохранить в Jira</button>
+      </div>
+    </div>
+    <div id="filters-panel" class="toolbar-filters" hidden>
+      <div class="filter-group">
+        <label class="filter-label" for="sprint-filter">Спринт:</label>
+        <select id="sprint-filter">
+          <option value="">Все спринты</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="customer-filter">Бизнес-партнёр:</label>
+        <select id="customer-filter">
+          <option value="">Все бизнес-партнёры</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="label-filter">Метки:</label>
+        <select id="label-filter">
+          <option value="">Все метки</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label" for="range-from">Даты:</label>
+        <input type="date" id="range-from" class="range-input" aria-label="Показывать календарные дни начиная с даты" />
+        <span class="range-dash">—</span>
+        <input type="date" id="range-to" class="range-input" aria-label="Показывать календарные дни по дату включительно" />
+        <button type="button" id="btn-range-reset" class="icon-btn" title="Вид по умолчанию: с понедельника текущей недели до конца горизонта планирования" aria-label="Сбросить фильтр по датам">↺</button>
+      </div>
+    </div>
   </header>
   <div class="board-wrap">
     <div id="board" class="board" aria-busy="true"></div>

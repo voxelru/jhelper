@@ -23,6 +23,10 @@
   const rangeFromEl = document.getElementById("range-from");
   const rangeToEl = document.getElementById("range-to");
   const btnRangeReset = document.getElementById("btn-range-reset");
+  const btnFilters = document.getElementById("btn-filters");
+  const filtersPanelEl = document.getElementById("filters-panel");
+  const filtersCountEl = document.getElementById("filters-count");
+  const FILTERS_OPEN_KEY = "jhelper.filtersOpen";
 
   let settings = null;
   /** @type {{ rows: any[], meta: any } | null} */
@@ -40,6 +44,8 @@
   /** Фильтр по датам: какие календарные дни горизонта показывать на шкале (ISO, включительно). */
   let rangeFrom = "";
   let rangeTo = "";
+  /** Окно дат выбрано вручную, а не построено сервером по умолчанию. */
+  let customRange = false;
 
   // Геометрия блоков внутри строки: отступ сверху/снизу, зазор между
   // задачами, стоящими друг под другом, и минимальная высота блока (px).
@@ -65,7 +71,7 @@
   dialogEl.className = "task-dialog";
   dialogEl.innerHTML = `
     <form method="dialog" novalidate>
-      <div class="td-head"><span class="td-key"></span><span class="td-status"></span></div>
+      <div class="td-head"><span class="td-key"></span><span class="td-type"></span><span class="td-status"></span></div>
       <div class="td-summary"></div>
       <label class="td-field"><span>Дата начала</span><input type="date" name="start" required /></label>
       <label class="td-field"><span>Дата окончания</span><input type="date" name="end" required /></label>
@@ -100,6 +106,25 @@
     const total = countTasks(model);
     const tasksText = shownTasks === total ? `Задач: ${total}` : `Задач: ${shownTasks} из ${total}`;
     summaryEl.textContent = `${tasksText} · ${formatEffort(shownEffort)}`;
+  }
+
+  /** Блок фильтров сворачивается; состояние запоминается в браузере. */
+  function setFiltersOpen(open) {
+    filtersPanelEl.hidden = !open;
+    btnFilters.setAttribute("aria-expanded", open ? "true" : "false");
+    try {
+      localStorage.setItem(FILTERS_OPEN_KEY, open ? "1" : "0");
+    } catch (e) {
+      // Хранилище недоступно — блок просто не запомнит своё состояние.
+    }
+  }
+
+  /** Число заданных фильтров на кнопке — чтобы свёрнутый блок их не прятал. */
+  function updateFiltersCount() {
+    const active = [selectedSprint, selectedCustomer, selectedLabel, customRange].filter(Boolean).length;
+    filtersCountEl.hidden = !active;
+    filtersCountEl.textContent = active ? String(active) : "";
+    btnFilters.title = active ? `Задано фильтров: ${active}` : "Фильтры не заданы";
   }
 
   function updateSaveButton() {
@@ -373,10 +398,11 @@
     syncRangeInputs();
   }
 
-  /** Диапазон по умолчанию — горизонт планирования от сегодняшнего дня. */
+  /** Диапазон по умолчанию — с понедельника текущей недели до конца горизонта планирования. */
   function resetDateRange() {
     rangeFrom = "";
     rangeTo = "";
+    customRange = false;
     syncRangeInputs();
   }
 
@@ -544,6 +570,7 @@
 
     tooltipEl.innerHTML = `
       <div class="tt-row"><span class="tt-label">Задача</span><span class="tt-val">${keyLink}</span></div>
+      <div class="tt-row"><span class="tt-label">Тип</span><span class="tt-val">${escapeHtml(task.issueType || "—")}</span></div>
       ${pendingRow}
       ${missingText ? `<div class="tt-row"><span class="tt-label">Не заполнено</span><span class="tt-val">${escapeHtml(missingText)}</span></div>` : ""}
       <div class="tt-row"><span class="tt-label">Название</span><span class="tt-val">${escapeHtml(task.summary || "—")}</span></div>
@@ -661,6 +688,7 @@
     dialogEl.querySelector(".td-key").innerHTML = base
       ? `<a href="${escapeHtml(base)}/browse/${encodeURIComponent(task.key)}" target="_blank" rel="noopener noreferrer">${escapeHtml(task.key)}</a>`
       : escapeHtml(task.key);
+    dialogEl.querySelector(".td-type").textContent = task.issueType || "";
     dialogEl.querySelector(".td-status").textContent = task.status ? `[${task.status}]` : "";
     dialogEl.querySelector(".td-summary").textContent = task.summary || "";
     dialogEl.querySelector(".td-customer").textContent = task.customer || "—";
@@ -814,6 +842,7 @@
     boardEl.innerHTML = "";
     hideTooltip();
     updateSummary(0, 0);
+    updateFiltersCount();
     if (!settings || !model) return;
 
     ppd = Number(settings.pixelsPerWorkingDay || 36);
@@ -924,6 +953,7 @@
         el.className =
           "task" +
           (height < 11 ? " sliver" : height < 26 ? " tiny" : height < 48 ? " short" : "") +
+          (t.statusCategory === "done" ? " done" : "") +
           (t.pendingAssignee || t.pendingPlacement ? " pending" : "") +
           (isResizing ? " resizing" : "") +
           (box.clipLeft ? " clip-left" : "") +
@@ -937,6 +967,7 @@
         el.style.height = `${height}px`;
 
         const keyHtml = `<span class="task-key">${escapeHtml(t.key)}</span>`;
+        const typeHtml = t.issueType ? ` <span class="task-type">${escapeHtml(t.issueType)}</span>` : "";
         const statusHtml = `<span class="task-status">[${escapeHtml(t.status || "—")}]</span>`;
         const missingText = missingFieldsText(t);
         const missingHtml = missingText
@@ -944,7 +975,7 @@
           : "";
 
         el.innerHTML = `
-          <div class="task-line task-line-key">${missingHtml}${keyHtml} ${statusHtml}</div>
+          <div class="task-line task-line-key">${missingHtml}${keyHtml}${typeHtml} ${statusHtml}</div>
           <div class="task-line task-line-title" title="${escapeHtml(t.summary || "")}">${escapeHtml(t.summary || "—")}</div>
           <div class="task-line task-line-customer" title="${escapeHtml(t.customer || "")}">${escapeHtml(t.customer || "—")}</div>
         `;
@@ -971,6 +1002,17 @@
       wireRowDragDrop(rowEl, track, row);
       rowEl.appendChild(track);
       inner.appendChild(rowEl);
+    }
+
+    // Сегодняшний день — тонкая красная линия по середине его столбца через
+    // все строки. В выходной или вне выбранного окна дат линии нет.
+    const todayIndex = view.dates.indexOf(settings.today || "");
+    if (todayIndex >= 0) {
+      const todayEl = document.createElement("div");
+      todayEl.className = "today-line";
+      todayEl.style.left = `calc(var(--label-width) + ${(todayIndex + 0.5) * ppd}px)`;
+      todayEl.title = `Сегодня, ${formatDateRu(settings.today)}`;
+      inner.appendChild(todayEl);
     }
 
     boardEl.appendChild(inner);
@@ -1160,6 +1202,7 @@
       if (data.meta.planningStart) settings.planningStart = data.meta.planningStart;
       if (data.meta.planningEnd) settings.planningEnd = data.meta.planningEnd;
       settings.todayOffsetDays = Number(data.meta.todayOffsetDays || 0);
+      settings.today = data.meta.today || "";
     }
     pendingCount = (data.meta && data.meta.pendingCount) || 0;
     adoptServerWindow(data.meta);
@@ -1296,12 +1339,14 @@
   rangeFromEl.addEventListener("change", () => {
     rangeFrom = rangeFromEl.value || "";
     if (rangeFrom && rangeTo && rangeFrom > rangeTo) rangeTo = rangeFrom;
+    customRange = true;
     reloadForRange();
   });
 
   rangeToEl.addEventListener("change", () => {
     rangeTo = rangeToEl.value || "";
     if (rangeFrom && rangeTo && rangeTo < rangeFrom) rangeFrom = rangeTo;
+    customRange = true;
     reloadForRange();
   });
 
@@ -1310,6 +1355,16 @@
     reloadForRange();
   });
 
+  btnFilters.addEventListener("click", () => setFiltersOpen(filtersPanelEl.hidden));
+
+  let filtersOpen = false;
+  try {
+    filtersOpen = localStorage.getItem(FILTERS_OPEN_KEY) === "1";
+  } catch (e) {
+    filtersOpen = false;
+  }
+  setFiltersOpen(filtersOpen);
+  updateFiltersCount();
   updateSaveButton();
 
   loadSettings()
