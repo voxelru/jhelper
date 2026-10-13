@@ -1,6 +1,6 @@
 :root {
   --row-height: 72px;
-  --label-width: 200px;
+  --label-width: 224px;
   --header-height: 52px;
   --border: #cfd8dc;
   --bg-row: #fafafa;
@@ -333,7 +333,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   font-size: 0.85rem;
   font-weight: 500;
   background: var(--bg-row);
@@ -342,7 +342,35 @@ body {
   z-index: 2;
 }
 
+/* Кнопка рядом с именем: разворачивает строку на высоту всех параллельных задач. */
+.row-expand {
+  flex-shrink: 0;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  color: #546e7a;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.row-expand:hover {
+  background: #eceff1;
+}
+
+.board-row.expanded .row-expand {
+  background: #e3f2fd;
+  border-color: #90caf9;
+  color: #0d47a1;
+  transform: rotate(180deg);
+}
+
 .row-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

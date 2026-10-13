@@ -55,6 +55,9 @@
   // Шаг трудозатрат — четверть рабочего дня; сроки всегда в целых днях.
   const EFFORT_STEP = 0.25;
 
+  /** Строки сотрудников (assigneeId), развёрнутые кнопкой рядом с именем. */
+  const expandedRows = new Set();
+
   /** @type {{ task: any, sourceRow: any } | null} */
   let dragState = null;
   /** @type {{ task: any, row: any } | null} */
@@ -259,8 +262,12 @@
    * в неё, вся группа сжимается по вертикали до высоты строки (одиночная
    * задача с загрузкой больше 100% просто обрезается до неё). Проставляет
    * top/height (px) и scale — во сколько раз блок сжат (1 — не сжат).
+   *
+   * expanded — строка развёрнута: каждый блок получает полную высоту unit
+   * независимо от загрузки и ничего не сжимается, а строка растёт вниз.
+   * Возвращает высоту, занятую блоками (нижний край самого нижнего из них).
    */
-  function layoutStack(items, unit) {
+  function layoutStack(items, unit, expanded) {
     const EPS = 1e-6;
     const sorted = items
       .slice()
@@ -268,15 +275,17 @@
     const placed = [];
     let group = [];
     let groupEnd = -Infinity;
+    let stackBottom = 0;
 
     const closeGroup = () => {
       const bottom = Math.max(...group.map((item) => item.top + item.height));
-      const scale = bottom > unit + EPS ? unit / bottom : 1;
+      const scale = !expanded && bottom > unit + EPS ? unit / bottom : 1;
       for (const item of group) {
         item.top *= scale;
         item.height *= scale;
         item.scale = scale;
       }
+      stackBottom = Math.max(stackBottom, bottom * scale);
       group = [];
     };
 
@@ -287,7 +296,9 @@
       // Зазор между блоками входит в высоту: две задачи по 50% вместе с
       // зазором занимают ровно unit. Слишком низкий блок нельзя ни прочитать,
       // ни схватить мышью, поэтому высота ограничена снизу.
-      const height = Math.max(MIN_TASK_HEIGHT, taskLoad(item.task) * (unit + STACK_GAP) - STACK_GAP);
+      const height = expanded
+        ? unit
+        : Math.max(MIN_TASK_HEIGHT, taskLoad(item.task) * (unit + STACK_GAP) - STACK_GAP);
       const overlapping = placed.filter((p) => p.start < end - EPS && start < p.end - EPS);
       const candidates = [0, ...overlapping.map((p) => p.top + p.height + STACK_GAP)].sort((x, y) => x - y);
       const top = candidates.find((y) =>
@@ -300,6 +311,7 @@
       groupEnd = Math.max(groupEnd, end);
     }
     if (group.length) closeGroup();
+    return stackBottom;
   }
 
   /**
@@ -902,8 +914,11 @@
         if (box) visibleTasks.push({ task: t, box });
       }
 
+      const rowKey = row.assigneeId || "";
+      const expanded = expandedRows.has(rowKey);
       const rowEl = document.createElement("div");
-      rowEl.className = "board-row" + (visibleTasks.length ? "" : " no-tasks");
+      rowEl.className =
+        "board-row" + (visibleTasks.length ? "" : " no-tasks") + (expanded ? " expanded" : "");
       rowEl.dataset.assigneeId = row.assigneeId || "";
 
       // Рядом с сотрудником — суммарная оценка задач, попавших в текущие
@@ -917,6 +932,21 @@
 
       const label = document.createElement("div");
       label.className = "row-label";
+      // Кнопка разворачивает строку: параллельные задачи встают друг под
+      // другом в полную высоту, и в каждую можно попасть мышью.
+      const expandEl = document.createElement("button");
+      expandEl.type = "button";
+      expandEl.className = "row-expand";
+      expandEl.textContent = "▾";
+      expandEl.title = expanded
+        ? "Свернуть строку до обычной высоты"
+        : "Развернуть строку: каждая задача — в полную высоту";
+      expandEl.setAttribute("aria-expanded", expanded ? "true" : "false");
+      expandEl.addEventListener("click", () => {
+        if (expanded) expandedRows.delete(rowKey);
+        else expandedRows.add(rowKey);
+        render();
+      });
       const nameEl = document.createElement("span");
       nameEl.className = "row-name";
       nameEl.textContent = row.assigneeName || "—";
@@ -924,7 +954,7 @@
       totalEl.className = "row-total";
       totalEl.textContent = formatEffort(rowEffort);
       totalEl.title = `Суммарная оценка показанных задач (${visibleTasks.length} из ${row.tasks.length}) с учётом фильтров`;
-      label.append(nameEl, totalEl);
+      label.append(expandEl, nameEl, totalEl);
       rowEl.appendChild(label);
 
       const track = document.createElement("div");
@@ -934,8 +964,15 @@
       // Высота блока — загрузка сотрудника задачей, площадь — трудозатраты.
       // Высота строки постоянна: то, что в неё не помещается, сжимается, а
       // дни с загрузкой больше 100% подчёркиваются красным по нижнему краю.
+      // Развёрнутая строка растёт вниз: все блоки в полную высоту, друг под
+      // другом, без сжатия.
       const unit = baseRowHeight - 2 * TASK_INSET;
-      layoutStack(visibleTasks, unit);
+      const stackHeight = layoutStack(visibleTasks, unit, expanded);
+      if (expanded) {
+        const rowHeight = Math.max(baseRowHeight, stackHeight + 2 * TASK_INSET);
+        rowEl.style.minHeight = `${rowHeight}px`;
+        track.style.minHeight = `${rowHeight}px`;
+      }
 
       for (const { day, load } of overloadedDays(visibleTasks)) {
         if (day < view.startIndex || day >= view.endIndex) continue;
@@ -943,7 +980,7 @@
         mark.className = "overload-day";
         mark.style.left = `${(day - view.startIndex) * ppd}px`;
         mark.style.width = `${ppd}px`;
-        mark.title = `Загрузка ${Math.round(load * 100)}% — задачи сжаты по высоте`;
+        mark.title = `Загрузка ${Math.round(load * 100)}%` + (expanded ? "" : " — задачи сжаты по высоте");
         track.appendChild(mark);
       }
 
@@ -988,11 +1025,15 @@
           el.appendChild(resizeEl);
           wireTaskResize(resizeEl, t, row);
         }
-        const effortEl = document.createElement("div");
-        effortEl.className = "task-resize-effort";
-        effortEl.title = "Изменить трудозатраты (срок не меняется)";
-        el.appendChild(effortEl);
-        wireTaskEffortResize(effortEl, t, row, height / scale, unit, scale);
+        // В развёрнутой строке высота блока не отражает трудозатраты, поэтому
+        // тянуть за нижний край там нечего — они меняются в окне задачи.
+        if (!expanded) {
+          const effortEl = document.createElement("div");
+          effortEl.className = "task-resize-effort";
+          effortEl.title = "Изменить трудозатраты (срок не меняется)";
+          el.appendChild(effortEl);
+          wireTaskEffortResize(effortEl, t, row, height / scale, unit, scale);
+        }
 
         wireTaskTooltip(el, t);
         wireTaskDialog(el, t, row);
