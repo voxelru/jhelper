@@ -9,7 +9,10 @@
 <body>
   <header class="toolbar">
     <div class="toolbar-main">
-      <h1>План задач</h1>
+      <nav class="view-nav" aria-label="Представления">
+        <a href="{{ url_for('index') }}" aria-current="page">План задач</a>
+        <a href="{{ url_for('worklog_page') }}">Списание времени</a>
+      </nav>
       <span id="summary" class="board-summary" title="Задачи и суммарные трудозатраты с учётом фильтров"></span>
       <label class="search-box" title="Поиск по номеру или заголовку задачи">
         <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">

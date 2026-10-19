@@ -1,0 +1,96 @@
+/* Страница «Списание времени»: поверх board.css — та же сетка «сотрудник ×
+   дата», но в клетке дня стоят задачи, по которым списано время. */
+
+/* Выходной показывается, только если в него кто-то списал время. */
+.timeline-day.wl-weekend,
+.wl-weekend-col {
+  background: #fff8e1;
+}
+
+.wl-weekend-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.timeline-day.wl-today {
+  color: #c62828;
+  font-weight: 700;
+}
+
+/* Сумма за день по всем сотрудникам — под датой в шапке. */
+.wl-day-total {
+  margin-top: 2px;
+  font-weight: 600;
+  color: #607d8b;
+}
+
+.wl-entry {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px 5px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  color: #fff;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+
+.wl-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Часы — главное число в блоке: обрезается номер задачи, но не они. */
+.wl-line-head {
+  display: flex;
+  gap: 4px;
+}
+
+.wl-key {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+}
+
+.wl-hours {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-weight: 600;
+  opacity: 0.95;
+}
+
+#search-input {
+  width: 220px;
+}
+
+.wl-title {
+  opacity: 0.9;
+}
+
+/* При наведении подсвечиваются все дни, в которые списывали на ту же задачу. */
+.wl-entry.related {
+  outline: 2px solid #263238;
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+.board-row.wl-faded .row-name,
+.board-row.wl-faded .row-total {
+  color: #9aa7ae;
+}
+
+/* Пустой статус не занимает место — иначе кнопка обновления уходит на вторую строку. */
+.status:empty {
+  display: none;
+}

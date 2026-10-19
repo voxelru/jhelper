@@ -147,3 +147,25 @@ def sprint_field_id(s: dict[str, Any]) -> str | None:
     if fid is not None:
         fid = str(fid).strip() or None
     return fid
+
+
+# По умолчанию страница списаний берёт задачи, в которых есть ворклог за
+# выбранные даты; {from} и {to} подставляются как YYYY-MM-DD.
+DEFAULT_WORKLOG_JQL = 'worklogDate >= "{from}" AND worklogDate <= "{to}"'
+
+
+def worklog_cfg(s: dict[str, Any]) -> dict[str, Any]:
+    """Секция worklog: JQL выборки задач и ширина дня на странице списаний."""
+    w = s.get("worklog") or {}
+    if not isinstance(w, dict):
+        w = {}
+    jql = str(w.get("jql") or "").strip() or DEFAULT_WORKLOG_JQL
+    return {
+        "jql": jql,
+        "pixels_per_day": int(w.get("pixels_per_day") or 120),
+    }
+
+
+def working_hours_per_day(s: dict[str, Any]) -> float:
+    """Длина рабочего дня в часах: working_hours_per_day."""
+    return float(s.get("working_hours_per_day") or 8)

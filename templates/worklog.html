@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jira — списание времени</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='board.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='worklog.css') }}" />
+</head>
+<body>
+  <header class="toolbar">
+    <div class="toolbar-main">
+      <nav class="view-nav" aria-label="Представления">
+        <a href="{{ url_for('index') }}">План задач</a>
+        <a href="{{ url_for('worklog_page') }}" aria-current="page">Списание времени</a>
+      </nav>
+      <span id="summary" class="board-summary" title="Списанное время с учётом поиска"></span>
+      <label class="search-box" title="Поиск по сотруднику, номеру или заголовку задачи">
+        <svg class="search-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <line x1="10" y1="10" x2="14.5" y2="14.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <input type="search" id="search-input" placeholder="Сотрудник, номер или заголовок…" aria-label="Поиск по сотруднику, номеру или заголовку задачи" />
+      </label>
+      <div class="filter-group">
+        <button type="button" id="btn-range-prev" class="icon-btn" title="Предыдущий период" aria-label="Предыдущий период">‹</button>
+        <input type="date" id="range-from" class="range-input" aria-label="Показывать списания начиная с даты" />
+        <span class="range-dash">—</span>
+        <input type="date" id="range-to" class="range-input" aria-label="Показывать списания по дату включительно" />
+        <button type="button" id="btn-range-next" class="icon-btn" title="Следующий период" aria-label="Следующий период">›</button>
+        <button type="button" id="btn-range-reset" class="icon-btn" title="Вид по умолчанию: прошлая и текущая неделя" aria-label="Сбросить фильтр по датам">↺</button>
+      </div>
+      <span id="status" class="status"></span>
+      <div class="toolbar-actions">
+        <button type="button" id="btn-refresh">Обновить из Jira</button>
+      </div>
+    </div>
+  </header>
+  <div class="board-wrap">
+    <div id="board" class="board" aria-busy="true"></div>
+  </div>
+  <script src="{{ url_for('static', filename='worklog.js') }}"></script>
+</body>
+</html>

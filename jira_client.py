@@ -242,3 +242,39 @@ def update_issue_effort(
             f"Не удалось сохранить трудозатраты для {issue_key}: {r.status_code}: {r.text[:300]}"
         )
     r.raise_for_status()
+
+
+def get_issue_worklogs(
+    base_url: str,
+    session: requests.Session,
+    issue_key: str,
+    *,
+    page_size: int = 1000,
+) -> list[dict[str, Any]]:
+    """Все ворклоги задачи.
+
+    В ответе поиска Jira вкладывает в поле worklog только первые ~20 записей;
+    если их больше, полный список дочитывается здесь — постранично, как того
+    требует Jira Cloud (Server/DC отдаёт всё одной страницей).
+    """
+    worklogs: list[dict[str, Any]] = []
+    api_versions = ["2", "3"]
+    start_at = 0
+    while True:
+        r = session.get(
+            f"{base_url}/rest/api/{api_versions[0]}/issue/{issue_key}/worklog",
+            params={"startAt": start_at, "maxResults": page_size},
+            timeout=120,
+        )
+        if r.status_code == 404 and len(api_versions) > 1:
+            api_versions.pop(0)
+            continue
+        r.raise_for_status()
+        data = r.json()
+        batch = data.get("worklogs") or []
+        worklogs.extend(batch)
+        total = data.get("total")
+        if not batch or total is None or len(worklogs) >= total:
+            break
+        start_at += len(batch)
+    return worklogs

@@ -27,6 +27,12 @@ from flask import Flask, jsonify, request
 from jql import JqlError, run_jql
 
 CSV_PATH = Path(os.environ.get("MOCK_JIRA_CSV") or Path(__file__).resolve().parent / "issues.csv")
+# Списания времени: строка — один ворклог. Файла может и не быть — тогда у задач
+# просто нет списаний.
+WORKLOGS_CSV_PATH = Path(os.environ.get("MOCK_JIRA_WORKLOGS_CSV") or CSV_PATH.with_name("worklogs.csv"))
+# Сколько ворклогов Jira вкладывает в поле worklog задачи в ответе поиска;
+# остальные приходится дочитывать через /issue/{key}/worklog.
+EMBEDDED_WORKLOGS = 20
 
 # Колонки с особым смыслом; любая другая колонка отдаётся как поле Jira с тем
 # же именем (duedate, customfield_10100, …).
@@ -73,8 +79,8 @@ class Table:
     encoding: str
 
 
-def load_table() -> Table:
-    raw = CSV_PATH.read_bytes()
+def read_csv(path: Path) -> Table:
+    raw = path.read_bytes()
     # Excel сохраняет CSV либо в UTF-8 с BOM, либо в cp1251 с «;» — читаем оба
     # варианта и при записи сохраняем тот же формат.
     if raw.startswith(codecs.BOM_UTF8):
@@ -93,10 +99,45 @@ def load_table() -> Table:
     columns = [(c or "").strip() for c in (reader.fieldnames or [])]
     reader.fieldnames = columns
     rows = list(reader)
-    for col in STANDARD_COLUMNS:
-        if col not in columns:
-            columns.append(col)
     return Table(columns, rows, delimiter, encoding)
+
+
+def load_table() -> Table:
+    table = read_csv(CSV_PATH)
+    for col in STANDARD_COLUMNS:
+        if col not in table.columns:
+            table.columns.append(col)
+    return table
+
+
+def load_worklogs() -> dict[str, list[dict[str, Any]]]:
+    """Ворклоги из worklogs.csv по ключу задачи (ключ — в нижнем регистре)."""
+    if not WORKLOGS_CSV_PATH.exists():
+        return {}
+    by_issue: dict[str, list[dict[str, Any]]] = {}
+    for number, row in enumerate(read_csv(WORKLOGS_CSV_PATH).rows, start=1):
+        key = cell(row, "issue_key")
+        seconds = parse_duration(cell(row, "time_spent"))
+        if not key or not seconds:
+            continue
+        login = cell(row, "author")
+        author = {"name": login, "key": login, "displayName": cell(row, "author_name") or login}
+        # «2026-10-12» или «2026-10-12 14:00» -> формат started из Jira.
+        started = cell(row, "started").replace("T", " ")
+        day, _, clock = started.partition(" ")
+        clock = clock[:5] if re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", clock) else "09:00"
+        by_issue.setdefault(key.casefold(), []).append(
+            {
+                "id": str(number),
+                "author": author,
+                "updateAuthor": author,
+                "comment": cell(row, "comment"),
+                "started": f"{day}T{clock}:00.000+0000",
+                "timeSpent": format_duration(seconds),
+                "timeSpentSeconds": seconds,
+            }
+        )
+    return by_issue
 
 
 def save_table(table: Table) -> None:
@@ -221,17 +262,35 @@ def issue_fields(table: Table, row: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
-def issue_json(table: Table, row: dict[str, Any]) -> dict[str, Any]:
+def issue_json(
+    table: Table,
+    row: dict[str, Any],
+    worklogs: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     key = cell(row, "key")
-    return {
-        "id": str(10000 + table.rows.index(row)),
+    issue_id = str(10000 + table.rows.index(row))
+    fields = issue_fields(table, row)
+    own = [{**w, "issueId": issue_id} for w in (worklogs or {}).get(key.casefold(), [])]
+    # Как в Jira: в задаче лежат только первые ворклоги, total — сколько их всего.
+    fields["worklog"] = {
+        "startAt": 0,
+        "maxResults": EMBEDDED_WORKLOGS,
+        "total": len(own),
+        "worklogs": own[:EMBEDDED_WORKLOGS],
+    }
+    issue = {
+        "id": issue_id,
         "key": key,
         "self": f"{request.host_url}rest/api/2/issue/{key}",
-        "fields": issue_fields(table, row),
+        "fields": fields,
     }
+    # Полный список — только для JQL (worklogDate, worklogAuthor), в ответ не уходит.
+    issue["_worklogs"] = own
+    return issue
 
 
 def only_fields(issue: dict[str, Any], wanted: set[str] | None) -> dict[str, Any]:
+    issue = {name: value for name, value in issue.items() if not name.startswith("_")}
     if wanted is None:
         return issue
     return {**issue, "fields": {name: value for name, value in issue["fields"].items() if name in wanted}}
@@ -366,7 +425,8 @@ def current_user() -> str:
 
 def run_search(params: dict[str, Any]):
     table = load_table()
-    issues = [issue_json(table, row) for row in table.rows if cell(row, "key")]
+    worklogs = load_worklogs()
+    issues = [issue_json(table, row, worklogs) for row in table.rows if cell(row, "key")]
     not_fields = ("key", "assignee_name", "original_estimate", "remaining_estimate", STATUS_CATEGORY_COLUMN)
     field_ids = [c for c in table.columns if c and c not in not_fields]
     jql = str(params.get("jql") or "")
@@ -448,7 +508,30 @@ def get_issue(version: str, issue_key: str):
     row = find_row(table, issue_key)
     if row is None:
         return jira_error(404, "Issue Does Not Exist")
-    return jsonify(only_fields(issue_json(table, row), wanted_fields()))
+    return jsonify(only_fields(issue_json(table, row, load_worklogs()), wanted_fields()))
+
+
+@app.get("/rest/api/<version>/issue/<issue_key>/worklog")
+def get_worklogs(version: str, issue_key: str):
+    """Все ворклоги задачи, постранично (startAt / maxResults), как в Jira Cloud."""
+    table = load_table()
+    row = find_row(table, issue_key)
+    if row is None:
+        return jira_error(404, "Issue Does Not Exist")
+    worklogs = issue_json(table, row, load_worklogs())["_worklogs"]
+    try:
+        start_at = max(0, int(request.args.get("startAt") or 0))
+        max_results = max(1, int(request.args.get("maxResults") or 5000))
+    except ValueError:
+        return jira_error(400, "startAt и maxResults должны быть числами")
+    return jsonify(
+        {
+            "startAt": start_at,
+            "maxResults": max_results,
+            "total": len(worklogs),
+            "worklogs": worklogs[start_at : start_at + max_results],
+        }
+    )
 
 
 def update_issue(issue_key: str, fields: dict[str, Any], update: dict[str, Any] | None = None):
@@ -553,7 +636,7 @@ def user_search(version: str):
 def list_fields(version: str):
     """Список полей — удобно подсматривать ID для config/app_settings.yaml."""
     table = load_table()
-    system = ["summary", "issuetype", "status", "priority", "assignee", "timetracking", "labels"]
+    system = ["summary", "issuetype", "status", "priority", "assignee", "timetracking", "labels", "worklog"]
     custom = [c for c in table.columns if c and c not in RESERVED_COLUMNS]
     return jsonify(
         [{"id": name, "name": name, "custom": name.startswith("customfield_")} for name in (*system, *custom)]

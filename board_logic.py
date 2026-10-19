@@ -53,7 +53,7 @@ def _horizon_end(start: date, kind: str, count: int) -> date:
     return start + timedelta(days=count - 1)
 
 
-def _cap_end(start: date, end: date) -> date:
+def cap_window_end(start: date, end: date) -> date:
     """Подрезает конец окна, если в нём больше MAX_WINDOW_WORKING_DAYS рабочих дней."""
     count = 0
     d = start
@@ -92,7 +92,7 @@ def planning_bounds(
         end = _horizon_end(start, kind, count)
     elif start is None:
         start = min(week_start, end)
-    return start, _cap_end(start, end)
+    return start, cap_window_end(start, end)
 
 
 def iter_working_dates(start: date, end: date) -> list[date]:

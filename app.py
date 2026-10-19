@@ -26,6 +26,7 @@ from board_logic import (
 from jira_client import (
     JiraConfigError,
     get_issue_type,
+    get_issue_worklogs,
     get_jira_session,
     search_issues_jql,
     update_issue_assignee,
@@ -49,7 +50,10 @@ from settings import (
     load_settings,
     priorities_cfg,
     settings_for_issue_type,
+    working_hours_per_day,
+    worklog_cfg,
 )
+from worklog_logic import build_worklog_board, worklog_bounds
 
 load_dotenv()
 
@@ -91,6 +95,11 @@ def requested_window(s: dict) -> tuple[date, date]:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/worklog")
+def worklog_page():
+    return render_template("worklog.html")
 
 
 @app.route("/api/settings")
@@ -159,6 +168,42 @@ def api_board():
         "sprints": sprints,
         "customers": customers,
         "labels": labels,
+    }
+    return jsonify(board)
+
+
+@app.route("/api/worklog")
+def api_worklog():
+    """Списание времени: кто, по каким задачам и сколько часов списал по дням."""
+    s = load_settings()
+    try:
+        base, session = get_jira_session()
+    except JiraConfigError as e:
+        return jsonify({"error": str(e)}), 400
+
+    start, end = worklog_bounds(_query_date("from"), _query_date("to"))
+    cfg = worklog_cfg(s)
+    jql = cfg["jql"].replace("{from}", start.isoformat()).replace("{to}", end.isoformat())
+    try:
+        issues = search_issues_jql(base, session, jql, fields=[*collect_jira_fields(s), "worklog"])
+        board = build_worklog_board(
+            issues,
+            lambda key: get_issue_worklogs(base, session, key),
+            s,
+            start,
+            end,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Jira: {e}"}), 502
+
+    board["meta"] = {
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "today": date.today().isoformat(),
+        "jql": jql,
+        "hoursPerDay": working_hours_per_day(s),
+        "pixelsPerDay": cfg["pixels_per_day"],
+        "jiraBaseUrl": jira_base_url(),
     }
     return jsonify(board)
 

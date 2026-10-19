@@ -6,7 +6,8 @@
   currentUser(), now(), EMPTY / NULL
 
 Поля: key, project, summary, assignee, status, statusCategory, priority,
-issuetype (type), labels и любая колонка CSV по её имени или как cf[10100].
+issuetype (type), labels, worklogDate и worklogAuthor (по worklogs.csv) и
+любая колонка CSV по её имени или как cf[10100].
 Всё остальное (история, WAS/CHANGED, прочие функции) даёт JqlError — сервер
 отвечает на него 400, как настоящая Jira на неверный запрос.
 """
@@ -30,7 +31,7 @@ _TOKEN = re.compile(
     re.X,
 )
 _ALIASES = {"issuekey": "key", "issue": "key", "id": "key", "type": "issuetype", "text": "summary"}
-_VIRTUAL_FIELDS = ("key", "project", "statuscategory")
+_VIRTUAL_FIELDS = ("key", "project", "statuscategory", "worklogdate", "worklogauthor")
 _RELATIONAL = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le}
 
 Issue = dict[str, Any]
@@ -60,6 +61,12 @@ def _values(issue: Issue, field: str) -> list[Any]:
         return [key.rsplit("-", 1)[0]]
     if field == "statuscategory":
         return _flatten((fields.get("status") or {}).get("statusCategory"))
+    # Полный список ворклогов сервер кладёт в issue["_worklogs"]; даты — ISO,
+    # поэтому сравниваются как строки.
+    if field == "worklogdate":
+        return [str(w.get("started") or "")[:10] for w in issue.get("_worklogs") or [] if w.get("started")]
+    if field == "worklogauthor":
+        return [v for w in issue.get("_worklogs") or [] for v in _flatten(w.get("author"))]
     return _flatten(fields.get(field))
 
 
